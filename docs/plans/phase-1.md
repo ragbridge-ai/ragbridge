@@ -58,3 +58,37 @@ build them.
    README; ready for `v0.1.0`
 
 Each step is built as several small, focused commits on its own feature branch.
+
+## Step 2 detail — documents model and upload
+
+Branch: `feat/phase-1-documents-model` (created from `main`, off the merged step 1).
+Step 1 (database foundation) is merged. Proposed commit breakdown:
+
+1. **`feat(db): add documents model and migration`**
+   - `Document` ORM model: `id` (UUID, PK), `filename` (str), `content_type` (str),
+     `sha256` (str, unique), `created_at` (timestamptz, server default `now()`).
+   - Alembic migration creating the `documents` table with a unique index on
+     `sha256`.
+   - Test: create a `Document` row through the session, read it back.
+2. **`feat(api): add POST /documents for text and Markdown`**
+   - Multipart upload, restricted to `text/plain` and `text/markdown` (other
+     content types get `415`).
+   - `sha256` computed from the uploaded content; a second upload of the same
+     content returns the existing document instead of erroring (idempotent).
+   - Enforces a new `max_upload_size` setting.
+   - Response: document id, filename, content_type, created_at.
+   - Tests: successful upload, duplicate upload, oversized upload, unsupported
+     content type.
+3. **`feat(api): add GET /documents and DELETE /documents/{id}`**
+   - `GET /documents` — list, newest first.
+   - `DELETE /documents/{id}` — `204` on success, `404` if missing.
+   - Tests for both, including the `404` case.
+
+**Open design question, not yet decided:** step 2 only persists document
+*metadata* — no `chunks` table exists yet (that arrives in step 3 with the
+chunker), so there is nowhere to put the uploaded file's raw content. Two
+options: (a) accept that uploaded content is effectively discarded until step 3
+adds chunking, re-uploading is required later, or (b) add a `content` column to
+`documents` now (or a temporary raw-storage mechanism) so nothing already
+uploaded is lost once chunking exists. This must be decided before commit 1 of
+step 2 is written.
