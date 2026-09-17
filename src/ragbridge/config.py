@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     app_name: str = "ragbridge"
     environment: str = "development"
-    database_url: str = "postgresql://ragbridge:ragbridge@localhost:5432/ragbridge"
+    database_url: str = "postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge"
 
 
 @lru_cache
