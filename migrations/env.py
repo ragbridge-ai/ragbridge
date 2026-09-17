@@ -6,7 +6,11 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+# Importing the models module registers every model's table on
+# ``Base.metadata``, so ``alembic revision --autogenerate`` can see them.
+# Nothing here uses the import directly - it runs for its side effect.
 from ragbridge.config import get_settings
+from ragbridge.db import models  # noqa: F401
 from ragbridge.db.base import Base
 
 # this is the Alembic Config object, which provides
