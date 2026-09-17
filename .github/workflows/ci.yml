@@ -8,6 +8,22 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: ragbridge
+          POSTGRES_PASSWORD: ragbridge
+          POSTGRES_DB: ragbridge
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ragbridge -d ragbridge"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -31,6 +47,9 @@ jobs:
 
       - name: Type check
         run: uv run mypy
+
+      - name: Run migrations
+        run: uv run alembic upgrade head
 
       - name: Run tests
         run: uv run pytest

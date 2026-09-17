@@ -22,6 +22,7 @@ No RAG functionality yet — see [AGENTS.md](AGENTS.md) for the full roadmap.
 cp .env.example .env                        # local configuration
 uv sync                                      # install dependencies
 docker compose up -d                         # start PostgreSQL + pgvector
+uv run alembic upgrade head                  # apply database migrations
 uv run uvicorn ragbridge.main:app --reload   # run the API locally
 ```
 
