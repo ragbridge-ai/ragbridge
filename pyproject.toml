@@ -1,10 +1,10 @@
 [project]
 name = "ragbridge"
-version = "0.1.0"
+version = "0.0.1"
 description = "RAG-ready service that lets existing applications add chat and smart search over their own data"
 readme = "README.md"
 authors = [
-    { name = "Amir Shadanfar", email = "a.shadanfar.it@gmail.com" }
+    { name = "Amir Shadanfar" }
 ]
 requires-python = ">=3.12"
 dependencies = [
@@ -12,9 +12,6 @@ dependencies = [
     "pydantic-settings>=2.15.0",
     "uvicorn[standard]>=0.53.0",
 ]
-
-[project.scripts]
-ragbridge = "ragbridge:main"
 
 [build-system]
 requires = ["uv_build>=0.12.15,<0.13.0"]
