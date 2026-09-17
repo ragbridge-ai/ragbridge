@@ -87,6 +87,49 @@ Step 1 (database foundation) is merged. Proposed commit breakdown:
    - Tests for both, including the `404` case.
 
 **Decided:** `documents` gets a `content TEXT NOT NULL` column now, storing the
-raw uploaded text. No `chunks` table exists yet (that arrives in step 3 with the
-chunker), so without this column the uploaded content would otherwise be lost;
-storing it means documents can be re-chunked later without re-uploading.
+raw uploaded text. No `chunks` table exists yet (that arrives once embeddings
+do, in step 4 - see below), so without this column the uploaded content would
+otherwise be lost; storing it means documents can be re-chunked later without
+re-uploading.
+
+## Step 3 detail — PDF parsing and chunker
+
+Branch: `feat/phase-1-pdf-chunker` (created from `main`, off the merged step 2).
+Step 2 (documents model and upload) is merged. Both pieces built here are pure
+functions with unit tests only - no database or API changes yet. The upload
+endpoint starts using them in step 4, once the `chunks` table exists to store
+the result (the `embedding vector(N)` column needs `EMBEDDING_DIMENSION`,
+which is a step 4 setting - see decision 2). Proposed commit breakdown:
+
+1. **`feat(chunking): add paragraph-then-character chunker`**
+   - `chunk_text(text, *, chunk_size, chunk_overlap) -> list[str]` in a new
+     `src/ragbridge/chunking.py`. Splits on blank-line paragraph boundaries
+     first; a paragraph longer than `chunk_size` is further split by
+     characters, with `chunk_overlap` characters repeated between consecutive
+     chunks so a fact split across a chunk boundary is not lost entirely.
+   - Raises `ValueError` if `chunk_overlap >= chunk_size` (would loop forever
+     or never advance).
+   - Unit tests: empty text, short text (one chunk), several short paragraphs
+     (one chunk per paragraph, no split), one long paragraph (character split
+     with overlap), invalid `chunk_overlap`.
+2. **`feat(pdf): add PDF text extraction`**
+   - `extract_pdf_pages(data: bytes) -> list[str]` in a new
+     `src/ragbridge/pdf.py`, using `pypdf.PdfReader`. Returns one string per
+     page (not one joined string), so a later step can record which page a
+     chunk came from - the `chunks.metadata` column already has this in mind
+     (see Data model).
+   - Add `pypdf` as a runtime dependency.
+   - Add `fpdf2` as a **dev-only** dependency, used only to generate a real
+     small PDF in a pytest fixture (two pages, known text). Reading a PDF that
+     was actually built with a normal PDF library is a better test than
+     hand-written PDF byte literals, which are brittle and unreadable in a
+     diff.
+   - Unit tests: two-page PDF -> two strings with the expected text; a page
+     with no text -> empty string, not a crash; invalid PDF bytes -> a clear
+     error (not a bare exception from `pypdf`).
+
+**Decided:** neither function touches `POST /documents` yet. Wiring PDF
+upload and chunking into the endpoint happens in step 4, together with
+embeddings, because that is when the `chunks` table (and its `metadata`
+column for the page number) is created - storing chunks before that table
+exists would mean throwing the page numbers away and recomputing them later.
