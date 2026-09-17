@@ -55,6 +55,7 @@ Output: public repo with green CI.
 Upload documents (text, Markdown, PDF), chunking, embeddings, storage in pgvector,
 `/query` endpoint that returns an answer with sources, LiteLLM, SQLAlchemy + Alembic.
 Output: `v0.1.0`, runs with `docker compose up`.
+See the detailed plan: [docs/plans/phase-1.md](docs/plans/phase-1.md).
 
 ### Phase 2 — Quality (Weeks 5–6)
 Hybrid search (pgvector + PostgreSQL full-text search), reranking, test dataset,
