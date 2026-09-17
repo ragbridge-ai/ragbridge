@@ -143,5 +143,7 @@ docker compose up -d                      # start PostgreSQL + pgvector
 2. Before writing code, give a short plan and wait for approval if the task is large.
 3. After changes, run tests, ruff, and mypy, and make sure they pass.
 4. At the end, summarize what you changed, why, and what the maintainer should learn from it.
-5. Do not push to GitHub, publish packages, or change repository settings. The maintainer
-   does these steps himself.
+5. Never commit to `main` directly. Work on one feature branch per step and push
+   only that branch. Never merge, push to `main`, force-push, create tags,
+   publish packages, or change repository settings. The maintainer opens and
+   merges pull requests.
