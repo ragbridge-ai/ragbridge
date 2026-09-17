@@ -34,7 +34,8 @@ build them.
 ## Data model
 
 - `documents`: `id` (UUID), `filename`, `content_type`, `sha256` (unique),
-  `created_at`
+  `content` (text, not null - the raw uploaded text, kept so documents can be
+  re-chunked later without re-uploading), `created_at`
 - `chunks`: `id` (UUID), `document_id` (FK, `ON DELETE CASCADE`), `chunk_index`,
   `content`, `embedding` (`vector(N)`), `metadata` (`jsonb`, e.g. PDF page number)
 - HNSW index on `chunks.embedding`, cosine distance
@@ -66,7 +67,8 @@ Step 1 (database foundation) is merged. Proposed commit breakdown:
 
 1. **`feat(db): add documents model and migration`**
    - `Document` ORM model: `id` (UUID, PK), `filename` (str), `content_type` (str),
-     `sha256` (str, unique), `created_at` (timestamptz, server default `now()`).
+     `sha256` (str, unique), `content` (text, not null), `created_at` (timestamptz,
+     server default `now()`).
    - Alembic migration creating the `documents` table with a unique index on
      `sha256`.
    - Test: create a `Document` row through the session, read it back.
@@ -84,11 +86,7 @@ Step 1 (database foundation) is merged. Proposed commit breakdown:
    - `DELETE /documents/{id}` — `204` on success, `404` if missing.
    - Tests for both, including the `404` case.
 
-**Open design question, not yet decided:** step 2 only persists document
-*metadata* — no `chunks` table exists yet (that arrives in step 3 with the
-chunker), so there is nowhere to put the uploaded file's raw content. Two
-options: (a) accept that uploaded content is effectively discarded until step 3
-adds chunking, re-uploading is required later, or (b) add a `content` column to
-`documents` now (or a temporary raw-storage mechanism) so nothing already
-uploaded is lost once chunking exists. This must be decided before commit 1 of
-step 2 is written.
+**Decided:** `documents` gets a `content TEXT NOT NULL` column now, storing the
+raw uploaded text. No `chunks` table exists yet (that arrives in step 3 with the
+chunker), so without this column the uploaded content would otherwise be lost;
+storing it means documents can be re-chunked later without re-uploading.
