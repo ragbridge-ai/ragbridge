@@ -133,3 +133,47 @@ upload and chunking into the endpoint happens in step 4, together with
 embeddings, because that is when the `chunks` table (and its `metadata`
 column for the page number) is created - storing chunks before that table
 exists would mean throwing the page numbers away and recomputing them later.
+
+## Step 5 detail — vector retrieval and POST /query
+
+Branch: `feat/phase-1-query` (created from `main`, off the merged step 4).
+Step 4 (chunks, embeddings, upload wiring) is merged. Proposed commit
+breakdown:
+
+1. **`feat(chat): add Chatter protocol with LiteLLM and fake implementations`**
+   - `Chatter` `Protocol` in a new `src/ragbridge/chat.py`, mirroring
+     `Embedder` from step 4: `async def answer(self, question: str, context:
+     list[str]) -> str`. The implementation owns prompt construction (a
+     system prompt telling the model to answer only from the given context
+     and say it does not know otherwise), so there is one place to change
+     the wording later - the caller only supplies raw ingredients.
+   - `LiteLLMChatter`: calls `litellm.acompletion` with `settings.chat_model`,
+     passing `OLLAMA_BASE_URL` only for `ollama/*` models (same reasoning as
+     `LiteLLMEmbedder` in step 4).
+   - `FakeChatter`: deterministic, no network call, used by tests (decision 5).
+   - `get_chatter` FastAPI dependency, overridable in tests the same way
+     `get_embedder` is.
+2. **`feat(api): add POST /query with vector retrieval`**
+   - New router `src/ragbridge/api/query.py`. Request: `{question: str,
+     top_k: int}` (`top_k` defaults to 5, capped at 20 via Pydantic `Field`
+     validation - a request-level knob, not a new setting; nothing yet
+     shows it needs to be fixed per installation).
+   - Embeds the question with the injected `Embedder`, then selects the
+     `top_k` nearest chunks by `Chunk.embedding.cosine_distance(...)`
+     (matches the HNSW index's `vector_cosine_ops` from step 4), joined
+     with their `Document` for `filename`.
+   - Calls `Chatter.answer(question, [chunk.content for chunk in ...])` and
+     returns `{answer, sources[]}`, each source: `document_id`, `filename`,
+     `chunk_index`, `snippet` (chunk content truncated to a fixed length -
+     the full content is never returned by the API today either), `score`
+     (`1 - cosine_distance`, so higher means more relevant).
+   - Test fixture: override `get_chatter` with `FakeChatter`, same pattern
+     as `get_embedder`.
+   - Tests: a question whose text exactly matches an uploaded chunk's
+     content ranks that chunk first with `score` 1.0 (`FakeEmbedder` is
+     deterministic per exact text, so identical text embeds identically -
+     this is how retrieval order is tested meaningfully without a real,
+     semantically-aware embedder); `top_k` limits the number of sources;
+     an empty database returns `sources: []` and still calls `Chatter`
+     (with empty context, not skipped) so the "I don't know" behavior is
+     the model's responsibility, not a special case in the endpoint.
