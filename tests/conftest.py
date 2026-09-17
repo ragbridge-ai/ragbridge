@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from ragbridge.config import Settings
 from ragbridge.db.session import create_engine, create_session_factory
+from ragbridge.embeddings import FakeEmbedder, get_embedder
 from ragbridge.main import create_app
 
 
@@ -40,8 +41,10 @@ def app_with_database() -> FastAPI:
     docker-compose locally, the ``postgres`` service container in CI.
     """
     app = create_app()
-    engine = create_engine(Settings())
+    settings = Settings()
+    engine = create_engine(settings)
     app.state.session_factory = create_session_factory(engine)
+    app.dependency_overrides[get_embedder] = lambda: FakeEmbedder(settings.embedding_dimension)
     return app
 
 

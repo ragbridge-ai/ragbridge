@@ -11,13 +11,16 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ragbridge.chunking import chunk_text
 from ragbridge.config import Settings, get_settings
-from ragbridge.db.models import Document
+from ragbridge.db.models import Chunk, Document
 from ragbridge.db.session import get_session
+from ragbridge.embeddings import Embedder, get_embedder
+from ragbridge.pdf import extract_pdf_pages
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
-ALLOWED_CONTENT_TYPES = {"text/plain", "text/markdown"}
+ALLOWED_CONTENT_TYPES = {"text/plain", "text/markdown", "application/pdf"}
 
 
 class DocumentOut(BaseModel):
@@ -37,11 +40,13 @@ async def upload_document(
     file: UploadFile,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    embedder: Annotated[Embedder, Depends(get_embedder)],
 ) -> Document:
-    """Upload a text or Markdown document.
+    """Upload a text, Markdown, or PDF document.
 
-    Uploading the same content twice is not an error: the second upload
-    returns the existing document instead of creating a duplicate.
+    The content is parsed, split into chunks, and embedded before it is
+    stored. Uploading the same content twice is not an error: the second
+    upload returns the existing document instead of redoing that work.
     """
     filename = file.filename
     content_type = file.content_type
@@ -59,22 +64,61 @@ async def upload_document(
     if len(raw) > settings.max_upload_size:
         raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="file too large")
 
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="file is not valid UTF-8 text",
-        ) from exc
-
     sha256 = hashlib.sha256(raw).hexdigest()
     existing = await session.scalar(select(Document).where(Document.sha256 == sha256))
     if existing is not None:
         response.status_code = status.HTTP_200_OK
         return existing
 
-    document = Document(filename=filename, content_type=content_type, sha256=sha256, content=text)
+    if content_type == "application/pdf":
+        try:
+            pages = extract_pdf_pages(raw)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            ) from exc
+    else:
+        try:
+            pages = [raw.decode("utf-8")]
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="file is not valid UTF-8 text",
+            ) from exc
+
+    document = Document(
+        filename=filename,
+        content_type=content_type,
+        sha256=sha256,
+        content="\n\n".join(pages),
+    )
     session.add(document)
+    await session.flush()
+
+    is_pdf = content_type == "application/pdf"
+    chunk_contents: list[str] = []
+    chunk_metadata: list[dict[str, int]] = []
+    for page_number, page_text in enumerate(pages, start=1):
+        for chunk_content in chunk_text(
+            page_text, chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap
+        ):
+            chunk_contents.append(chunk_content)
+            chunk_metadata.append({"page": page_number} if is_pdf else {})
+
+    embeddings = await embedder.embed(chunk_contents) if chunk_contents else []
+    for index, (content, metadata, embedding) in enumerate(
+        zip(chunk_contents, chunk_metadata, embeddings, strict=True)
+    ):
+        session.add(
+            Chunk(
+                document_id=document.id,
+                chunk_index=index,
+                content=content,
+                embedding=embedding,
+                metadata_=metadata,
+            )
+        )
+
     await session.commit()
     await session.refresh(document)
     response.status_code = status.HTTP_201_CREATED
