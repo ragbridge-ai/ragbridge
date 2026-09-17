@@ -19,18 +19,7 @@ The goal is a project that real people can use, not only a portfolio demo.
 Keep the scope focused: "RAG ready for existing applications". Do NOT try to build a general
 framework like LangChain.
 
-## 2. About the maintainer
-
-- Senior backend engineer with a strong PHP background (Symfony, Laravel, MySQL, Docker,
-  real-time architecture).
-- Currently learning Python by building this project.
-- When you write Python code, briefly explain Python-specific concepts and compare them to
-  PHP where it helps (for example: `uv` vs Composer, Pydantic vs Symfony Validator,
-  FastAPI dependencies vs Symfony autowiring).
-- Explain WHY a choice was made, not only WHAT the code does.
-- Use clear, simple English (around B2 level) in explanations and comments.
-
-## 3. Tech stack
+## 2. Tech stack
 
 | Area | Tool |
 |---|---|
@@ -55,7 +44,7 @@ framework like LangChain.
 Only add a tool when the current phase needs it. Every important tool choice gets a short
 Architecture Decision Record (ADR) in `docs/adr/`.
 
-## 4. Roadmap
+## 3. Roadmap
 
 ### Phase 0 — Setup (Week 1) ✅ Done
 Clean project skeleton: `uv` project with src layout, FastAPI app factory, `/health` endpoint,
@@ -88,7 +77,7 @@ Output: `v1.0.0`.
 ### After v1
 GraphRAG with Neo4j, Qdrant adapter behind the same interface as pgvector, direct MySQL sync.
 
-## 5. Project structure (target)
+## 4. Project structure (target)
 
 ```
 ragbridge/
@@ -114,7 +103,7 @@ ragbridge/
 └── README.md
 ```
 
-## 6. Coding rules
+## 5. Coding rules
 
 - Use the src layout. All application code lives in `src/ragbridge/`.
 - Use the application factory pattern (`create_app()`), so tests can build a fresh app.
@@ -126,7 +115,7 @@ ragbridge/
 - Keep functions small and names clear. Prefer simple code over clever code.
 - Use Conventional Commits for commit messages (`feat:`, `fix:`, `chore:`, `docs:`, `test:`).
 
-## 7. Commands
+## 6. Commands
 
 ```bash
 uv sync                                   # install dependencies
@@ -138,7 +127,7 @@ uv run uvicorn ragbridge.main:app --reload  # run the API locally
 docker compose up -d                      # start PostgreSQL + pgvector
 ```
 
-## 8. How to work on tasks
+## 7. How to work on tasks
 
 1. Work on one phase or one step at a time. Do not jump ahead to later phases.
 2. Before writing code, give a short plan and wait for approval if the task is large.
