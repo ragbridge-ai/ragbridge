@@ -1,4 +1,6 @@
-"""Tests for POST /documents."""
+"""Tests for POST /documents, GET /documents, and DELETE /documents/{id}."""
+
+import uuid
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -49,3 +51,45 @@ def test_upload_document_rejects_unsupported_content_type(app_with_database: Fas
     response = client.post("/documents", files={"file": ("data.json", b"{}", "application/json")})
 
     assert response.status_code == 415
+
+
+def test_list_documents_returns_newest_first(app_with_database: FastAPI) -> None:
+    client = TestClient(app_with_database)
+    first = client.post("/documents", files={"file": ("first.txt", b"first", "text/plain")})
+    second = client.post("/documents", files={"file": ("second.txt", b"second", "text/plain")})
+
+    response = client.get("/documents")
+
+    assert response.status_code == 200
+    ids = [document["id"] for document in response.json()]
+    assert ids == [second.json()["id"], first.json()["id"]]
+
+
+def test_list_documents_returns_empty_list_when_there_are_none(
+    app_with_database: FastAPI,
+) -> None:
+    client = TestClient(app_with_database)
+
+    response = client.get("/documents")
+
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_delete_document_removes_it(app_with_database: FastAPI) -> None:
+    client = TestClient(app_with_database)
+    uploaded = client.post("/documents", files={"file": ("a.txt", b"content", "text/plain")})
+    document_id = uploaded.json()["id"]
+
+    response = client.delete(f"/documents/{document_id}")
+
+    assert response.status_code == 204
+    assert client.get("/documents").json() == []
+
+
+def test_delete_document_returns_404_when_missing(app_with_database: FastAPI) -> None:
+    client = TestClient(app_with_database)
+
+    response = client.delete(f"/documents/{uuid.uuid4()}")
+
+    assert response.status_code == 404

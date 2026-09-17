@@ -2,6 +2,7 @@
 
 import hashlib
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated
 
@@ -78,3 +79,26 @@ async def upload_document(
     await session.refresh(document)
     response.status_code = status.HTTP_201_CREATED
     return document
+
+
+@router.get("", response_model=list[DocumentOut])
+async def list_documents(
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Sequence[Document]:
+    """List all documents, newest first."""
+    result = await session.scalars(select(Document).order_by(Document.created_at.desc()))
+    return result.all()
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> None:
+    """Delete a document by id."""
+    document = await session.get(Document, document_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+
+    await session.delete(document)
+    await session.commit()
