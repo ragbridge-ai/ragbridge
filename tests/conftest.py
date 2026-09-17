@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import text
 
+from ragbridge.chat import FakeChatter, get_chatter
 from ragbridge.config import Settings
 from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.embeddings import FakeEmbedder, get_embedder
@@ -45,6 +46,7 @@ def app_with_database() -> FastAPI:
     engine = create_engine(settings)
     app.state.session_factory = create_session_factory(engine)
     app.dependency_overrides[get_embedder] = lambda: FakeEmbedder(settings.embedding_dimension)
+    app.dependency_overrides[get_chatter] = lambda: FakeChatter()
     return app
 
 
