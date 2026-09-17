@@ -1,29 +1,13 @@
 """Unit tests for PDF text extraction. Pure functions, no database needed."""
 
 import pytest
-from fpdf import FPDF
 
 from ragbridge.pdf import extract_pdf_pages
-
-
-def _build_pdf(pages: list[str]) -> bytes:
-    """Build a real PDF with one page per string, using fpdf2.
-
-    Reading a PDF actually produced by a PDF library is a better test
-    than hand-written PDF byte literals, which are brittle and hard to
-    read in a diff.
-    """
-    pdf = FPDF()
-    for text in pages:
-        pdf.add_page()
-        if text:
-            pdf.set_font("Helvetica", size=12)
-            pdf.cell(text=text)
-    return bytes(pdf.output())
+from tests.helpers import build_pdf
 
 
 def test_extract_pdf_pages_returns_one_string_per_page() -> None:
-    data = _build_pdf(["Hello, ragbridge.", "Second page."])
+    data = build_pdf(["Hello, ragbridge.", "Second page."])
 
     result = extract_pdf_pages(data)
 
@@ -31,7 +15,7 @@ def test_extract_pdf_pages_returns_one_string_per_page() -> None:
 
 
 def test_extract_pdf_pages_returns_empty_string_for_a_page_with_no_text() -> None:
-    data = _build_pdf([""])
+    data = build_pdf([""])
 
     result = extract_pdf_pages(data)
 
