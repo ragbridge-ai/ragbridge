@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     app_name: str = "ragbridge"
     environment: str = "development"
     database_url: str = "postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge"
+    max_upload_size: int = 10_000_000
+    """Maximum accepted size, in bytes, of an uploaded document."""
 
 
 @lru_cache

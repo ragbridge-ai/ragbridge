@@ -34,7 +34,8 @@ build them.
 ## Data model
 
 - `documents`: `id` (UUID), `filename`, `content_type`, `sha256` (unique),
-  `created_at`
+  `content` (text, not null - the raw uploaded text, kept so documents can be
+  re-chunked later without re-uploading), `created_at`
 - `chunks`: `id` (UUID), `document_id` (FK, `ON DELETE CASCADE`), `chunk_index`,
   `content`, `embedding` (`vector(N)`), `metadata` (`jsonb`, e.g. PDF page number)
 - HNSW index on `chunks.embedding`, cosine distance
@@ -58,3 +59,34 @@ build them.
    README; ready for `v0.1.0`
 
 Each step is built as several small, focused commits on its own feature branch.
+
+## Step 2 detail — documents model and upload
+
+Branch: `feat/phase-1-documents-model` (created from `main`, off the merged step 1).
+Step 1 (database foundation) is merged. Proposed commit breakdown:
+
+1. **`feat(db): add documents model and migration`**
+   - `Document` ORM model: `id` (UUID, PK), `filename` (str), `content_type` (str),
+     `sha256` (str, unique), `content` (text, not null), `created_at` (timestamptz,
+     server default `now()`).
+   - Alembic migration creating the `documents` table with a unique index on
+     `sha256`.
+   - Test: create a `Document` row through the session, read it back.
+2. **`feat(api): add POST /documents for text and Markdown`**
+   - Multipart upload, restricted to `text/plain` and `text/markdown` (other
+     content types get `415`).
+   - `sha256` computed from the uploaded content; a second upload of the same
+     content returns the existing document instead of erroring (idempotent).
+   - Enforces a new `max_upload_size` setting.
+   - Response: document id, filename, content_type, created_at.
+   - Tests: successful upload, duplicate upload, oversized upload, unsupported
+     content type.
+3. **`feat(api): add GET /documents and DELETE /documents/{id}`**
+   - `GET /documents` — list, newest first.
+   - `DELETE /documents/{id}` — `204` on success, `404` if missing.
+   - Tests for both, including the `404` case.
+
+**Decided:** `documents` gets a `content TEXT NOT NULL` column now, storing the
+raw uploaded text. No `chunks` table exists yet (that arrives in step 3 with the
+chunker), so without this column the uploaded content would otherwise be lost;
+storing it means documents can be re-chunked later without re-uploading.

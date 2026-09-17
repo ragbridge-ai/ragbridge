@@ -1,11 +1,34 @@
 """Shared fixtures for tests that need a database-backed app."""
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI
+from sqlalchemy import text
 
 from ragbridge.config import Settings
 from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.main import create_app
+
+
+@pytest.fixture(autouse=True)
+def _reset_database() -> None:
+    """Empty every table before each test.
+
+    Tests run against the real test database (see decision 5 in
+    docs/plans/phase-1.md), not an in-memory fake, so rows written by one
+    test would otherwise still be there for the next one - for example
+    two tests uploading a document with the same content would collide
+    on the unique ``sha256`` constraint.
+    """
+
+    async def truncate_all_tables() -> None:
+        engine = create_engine(Settings())
+        async with engine.begin() as connection:
+            await connection.execute(text("TRUNCATE TABLE documents"))
+        await engine.dispose()
+
+    asyncio.run(truncate_all_tables())
 
 
 @pytest.fixture
