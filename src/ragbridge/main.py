@@ -1,9 +1,27 @@
 """Application entry point: builds the FastAPI app."""
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
 from ragbridge.api.health import router as health_router
 from ragbridge.config import get_settings
+from ragbridge.db.session import create_engine, create_session_factory
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    """Create the database engine on startup, dispose it on shutdown.
+
+    The engine is created here, not at import time, so importing the app
+    module never opens a network connection.
+    """
+    settings = get_settings()
+    engine = create_engine(settings)
+    app.state.session_factory = create_session_factory(engine)
+    yield
+    await engine.dispose()
 
 
 def create_app() -> FastAPI:
@@ -14,7 +32,7 @@ def create_app() -> FastAPI:
     app for each test run.
     """
     settings = get_settings()
-    app = FastAPI(title=settings.app_name)
+    app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.include_router(health_router)
     return app
 
