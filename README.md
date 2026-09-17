@@ -34,7 +34,7 @@ The API is then available at `http://localhost:8000`, with a health check at
 uv run pytest              # run tests
 uv run ruff check .        # lint
 uv run ruff format .       # format
-uv run mypy src            # type check
+uv run mypy                # type check
 ```
 
 ## License
