@@ -177,3 +177,52 @@ breakdown:
      an empty database returns `sources: []` and still calls `Chatter`
      (with empty context, not skipped) so the "I don't know" behavior is
      the model's responsibility, not a special case in the endpoint.
+
+## Step 6 detail — Dockerfile, docker-compose, README, v0.1.0
+
+Branch: `feat/phase-1-docker` (created from `main`, off the merged step 5).
+Step 5 (`POST /query`) is merged - every endpoint in the Phase 1 plan now
+exists. This step is about running the whole thing with one command, not new
+application code. Proposed commit breakdown:
+
+1. **`docs: add Phase 1 step 6 plan`** (this section).
+2. **`feat(docker): add Dockerfile and app service in docker-compose`**
+   - Multi-stage `Dockerfile` following `uv`'s documented Docker pattern:
+     a `builder` stage installs dependencies with `uv sync --locked --no-dev`
+     (dependencies first, without the project, so that layer stays cached
+     while only application code changes), then a slim final stage copies
+     the resulting virtualenv. Only runtime dependencies are installed -
+     `fpdf2`, `pytest`, `ruff`, `mypy` stay out of the image, same split
+     already expressed by `[dependency-groups] dev` in `pyproject.toml`.
+   - `.dockerignore` excludes `.venv`, `.git`, `tests/`, `docs/`,
+     `.mypy_cache`/`.pytest_cache`/`.ruff_cache`, and `.env` - none of these
+     are needed to run the service, and `.env` must never be baked into an
+     image.
+   - New `app` service in `docker-compose.yml`, `depends_on: postgres`
+     (`condition: service_healthy`), with `CMD ["sh", "-c", "alembic
+     upgrade head && uvicorn ragbridge.main:app --host 0.0.0.0 --port
+     8000"]` - migrations run every time the container starts, before the
+     server does, so the running app and the schema can never drift apart.
+   - **Decided:** the `app` service overrides two settings that only make
+     sense inside the Docker network, on top of whatever the user's `.env`
+     provides for everything else: `DATABASE_URL` points at the `postgres`
+     service by name instead of `localhost`, and `OLLAMA_BASE_URL` points
+     at `http://host.docker.internal:11434` (with `extra_hosts:
+     ["host.docker.internal:host-gateway"]` for portability to Linux Docker
+     Engine, not only Docker Desktop) - Ollama itself is expected to keep
+     running directly on the host, not inside Compose, and `localhost`
+     from inside a container means the container, not the host.
+3. **`docs: update README for v0.1.0`**
+   - Update Status from "Phase 0" to reflect Phase 1 being complete:
+     upload (text/Markdown/PDF), chunking, embeddings, and `/query`.
+   - Replace the manual `uv run uvicorn ...` getting-started flow with
+     `docker compose up` running the whole stack (Postgres + app,
+     migrations included), keep the `uv run` flow documented as the option
+     for local development without Docker.
+   - Document the embedding/chat/chunking settings from step 4 and a note
+     that a local Ollama (with `nomic-embed-text` and `llama3.2` pulled) is
+     needed for real answers - the test suite itself needs neither.
+   - Add example `curl` calls for `POST /documents` and `POST /query`.
+   - Bump `pyproject.toml` version to `0.1.0`. No git tag or GitHub release
+     is created here - that stays the maintainer's action, same as every
+     merge and push so far.
