@@ -11,17 +11,25 @@ build them.
    switching from sync to async later would touch every layer. One driver serves
    the app, Alembic, and pgvector.
 2. **Embedding model and dimension are settings**, fixed per installation. The
-   pgvector column size comes from the setting. Changing the model requires
-   re-embedding all documents (document this clearly). Examples:
-   OpenAI `text-embedding-3-small` = 1536, Ollama `nomic-embed-text` = 768.
-   Both are used through LiteLLM; the default provider is decided in step 4.
+   pgvector column size comes from the setting. Changing the model or dimension
+   requires a new migration and re-embedding all documents.
+   - Default for local development: `ollama/nomic-embed-text` for embeddings
+     (dimension 768) and an Ollama chat model (for example `ollama/llama3.2`)
+     for answers. Ollama needs no API key.
+   - Hosted providers are available through LiteLLM, by configuration only:
+     Voyage AI for embeddings, Anthropic Claude or OpenAI for chat. Anthropic
+     has no embedding model of its own.
+   - Planned settings, implemented in step 4: `EMBEDDING_MODEL`,
+     `EMBEDDING_DIMENSION`, `CHAT_MODEL`, `OLLAMA_BASE_URL`
+     (default `http://localhost:11434`).
 3. **Own small chunker** (paragraph-first, then character split, with size and
    overlap). No LangChain.
 4. **PDF parsing with `pypdf`** (BSD), not PyMuPDF (AGPL does not fit an MIT
    project).
 5. **Tests use real PostgreSQL with pgvector** (SQLite has no pgvector).
-   Embeddings and chat sit behind a `typing.Protocol`; tests use a fake. CI never
-   needs an API key.
+   Embeddings and chat sit behind a `typing.Protocol`. Tests and CI never call a
+   real provider (Ollama or hosted); they use the fake implementation, so CI
+   never needs an API key or a running Ollama instance.
 
 ## Data model
 
