@@ -46,7 +46,7 @@ Architecture Decision Record (ADR) in `docs/adr/`.
 
 ## 4. Roadmap
 
-### Phase 0 — Setup (Week 1)
+### Phase 0 — Setup (Week 1) ✅ Done
 Clean project skeleton: `uv` project with src layout, FastAPI app factory, `/health` endpoint,
 tests, ruff, mypy, Docker Compose with PostgreSQL + pgvector, GitHub Actions CI, README, LICENSE.
 Output: public repo with green CI.
@@ -121,7 +121,7 @@ uv sync                                   # install dependencies
 uv run pytest                             # run tests
 uv run ruff check .                       # lint
 uv run ruff format .                      # format
-uv run mypy src                           # type check
+uv run mypy                                # type check
 uv run uvicorn ragbridge.main:app --reload  # run the API locally
 docker compose up -d                      # start PostgreSQL + pgvector
 ```
