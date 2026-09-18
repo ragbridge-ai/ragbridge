@@ -37,6 +37,13 @@ class Question:
     Finding it inside a response's sources[].snippet is how this script
     tells "the right chunk came back" (docs/plans/phase-2.md, step 4).
     """
+    reference_answer: str
+    """A short, ground-truth answer to the question, grounded in the same
+    paragraph as source_snippet. Unused by this script - it exists for
+    evaluate_answers.py's RAGAS metrics (step 5), which need a reference
+    answer to compare a generated answer and its retrieved context
+    against.
+    """
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,7 @@ def load_dataset(path: Path = DATASET_PATH) -> list[Question]:
                 question=row["question"],
                 source_document=row["source_document"],
                 source_snippet=row["source_snippet"],
+                reference_answer=row["reference_answer"],
             )
         )
     return questions
