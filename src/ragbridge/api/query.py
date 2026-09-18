@@ -5,13 +5,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.chat import Chatter, get_chatter
-from ragbridge.db.models import Chunk, Document
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
+from ragbridge.retrieval import vector_search
 
 router = APIRouter(tags=["query"])
 
@@ -46,14 +45,7 @@ async def answer_query(
     """Embed the question, retrieve the nearest chunks, and answer from them."""
     [question_embedding] = await embedder.embed([request.question])
 
-    distance = Chunk.embedding.cosine_distance(question_embedding).label("distance")
-    result = await session.execute(
-        select(Chunk, Document, distance)
-        .join(Document, Chunk.document_id == Document.id)
-        .order_by(distance)
-        .limit(request.top_k)
-    )
-    rows = result.all()
+    rows = await vector_search(session, question_embedding, request.top_k)
 
     answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
     sources = [
@@ -62,9 +54,9 @@ async def answer_query(
             filename=document.filename,
             chunk_index=chunk.chunk_index,
             snippet=chunk.content[:SNIPPET_LENGTH],
-            score=1 - cosine_distance,
+            score=score,
         )
-        for chunk, document, cosine_distance in rows
+        for chunk, document, score in rows
     ]
 
     return QueryResponse(answer=answer, sources=sources)
