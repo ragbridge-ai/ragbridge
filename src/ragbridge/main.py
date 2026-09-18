@@ -10,13 +10,19 @@ from ragbridge.api.agent import router as agent_router
 from ragbridge.api.documents import router as documents_router
 from ragbridge.api.health import router as health_router
 from ragbridge.api.query import router as query_router
+from ragbridge.api.search import router as search_router
 from ragbridge.config import get_settings
 from ragbridge.db.session import create_engine, create_session_factory
+from ragbridge.mcp_server.http import mount_mcp
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Create the database engine on startup, dispose it on shutdown.
+
+    Also runs the MCP session manager for the app's lifetime: the ``/mcp``
+    transport is a mounted ASGI app, and mounted apps get no lifespan of
+    their own.
 
     The engine is created here, not at import time, so importing the app
     module never opens a network connection.
@@ -24,7 +30,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     settings = get_settings()
     engine = create_engine(settings)
     app.state.session_factory = create_session_factory(engine)
-    yield
+    async with app.state.mcp_server.session_manager.run():
+        yield
     await engine.dispose()
     tracing.flush(settings)
 
@@ -43,6 +50,8 @@ def create_app() -> FastAPI:
     app.include_router(documents_router)
     app.include_router(query_router)
     app.include_router(agent_router)
+    app.include_router(search_router)
+    app.state.mcp_server = mount_mcp(app)
     return app
 
 

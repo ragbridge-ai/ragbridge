@@ -11,8 +11,10 @@ dependencies = [
     "alembic>=1.20.0",
     "arq>=0.28.0",
     "fastapi>=0.141.1",
+    "httpx>=0.28.1",
     "langfuse>=4.15.4",
     "litellm>=1.101.0",
+    "mcp>=2,<3",
     "pgvector>=0.5.0",
     "psycopg[binary]>=3.3.5",
     "pydantic-settings>=2.15.0",
@@ -32,7 +34,6 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "fpdf2>=2.8.8",
-    "httpx>=0.28.1",
     # Pinned below 0.4: ragas 0.4.3 unconditionally imports
     # langchain_community.chat_models.vertexai at `import ragas` time, a
     # submodule langchain-community removed starting in 0.4 as part of its
