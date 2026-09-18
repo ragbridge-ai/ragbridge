@@ -87,6 +87,16 @@ class Settings(BaseSettings):
     answer_cache_ttl: int = 3_600
     """Seconds a cached answer lives, used only when answer_cache_enabled."""
 
+    langfuse_public_key: str = ""
+    """Enables Langfuse tracing and cost tracking when set together with
+    langfuse_secret_key. Empty by default: tracing is absent, not merely
+    disabled, until both keys are configured (decision 8,
+    docs/plans/phase-3.md).
+    """
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+    """A self-hosted Langfuse instance can point this elsewhere."""
+
 
 @lru_cache
 def get_settings() -> Settings:

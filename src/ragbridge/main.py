@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from ragbridge import tracing
 from ragbridge.api.documents import router as documents_router
 from ragbridge.api.health import router as health_router
 from ragbridge.api.query import router as query_router
@@ -24,6 +25,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.session_factory = create_session_factory(engine)
     yield
     await engine.dispose()
+    tracing.flush(settings)
 
 
 def create_app() -> FastAPI:
@@ -34,6 +36,7 @@ def create_app() -> FastAPI:
     app for each test run.
     """
     settings = get_settings()
+    tracing.configure(settings)
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.include_router(health_router)
     app.include_router(documents_router)
