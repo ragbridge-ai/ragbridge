@@ -49,6 +49,9 @@ MCP server so a client like Claude Desktop can search a tenant's documents direc
    unparseable output as a normal, expected event. The consequence is that a weak
    model degrades to exactly today's single-shot RAG behaviour rather than failing,
    and a strong model gets multi-step retrieval. Nothing in between breaks.
+   *Measured afterwards (see ADR 0006):* the RAGAS failure above did not carry over -
+   `llama3.2` produced a parseable decision on all 12 planner calls tried. The fallback
+   stays as a safety net, but "expected on the default model" was an overstatement.
 4. **The step ceiling is enforced in code, not in the prompt.** `AGENT_MAX_STEPS`
    (default `3`) bounds the loop itself. A request may ask for fewer, never more -
    the same shape as `top_k`, which Pydantic caps at 20 regardless of what a caller

@@ -29,7 +29,9 @@ A second constraint shapes the design more than the framework question does.
 `docs/adr/0004-...` measured the default `CHAT_MODEL` (`llama3.2`) failing RAGAS's
 structured-output contract on **24 of 25 records**, echoing the JSON schema back
 instead of filling it in. An agent whose control flow depends on structured output
-from that model must treat unparseable output as a normal, expected event.
+from that model must not assume its output parses. (That measurement was of RAGAS's
+schema, a stricter contract than the planner's two-field object; see the measurement
+under Consequences.)
 
 ## Decision
 
@@ -70,10 +72,16 @@ Write the loop by hand, in `ragbridge.agent.loop.run_agent`, behind a `Planner`
 - **No new runtime dependency.** The loop is about 30 lines with no database
   dependency - retrieval is passed in as a callable - so it is tested with
   `FakePlanner` and a fake search, and never needs a model or a session.
-- **The default model gains nothing from agent mode.** With `llama3.2` as the
-  planner, `POST /agent` will almost always behave like `POST /query`, and this is
-  by design rather than a defect. Multi-step behaviour needs a planner model that can
-  produce the JSON; this has not been measured against a strong model in this
-  project, and should be before anyone claims a quality benefit.
+- **Measured with the default model, after building it:** `llama3.2` was called as the
+  planner on 12 prompts (6 questions, each twice, against a real Ollama). All 12 replies
+  parsed - **no fallback fired** - so the strict fallback rule above is a safety net,
+  not the common path. It made sensible decisions (searching again for the second half
+  of a comparison, answering simple questions directly), but not consistently: the same
+  prompt gave a different decision on a second run, and one search repeated the
+  question almost verbatim (`support hours`), which wastes a step - harmlessly, since
+  results are de-duplicated by chunk id. This is a 12-call sample of *whether the JSON
+  parses and what it decides*, not a measurement of **answer quality**, which has not
+  been evaluated for `/agent` and should be (Phase 2's RAGAS scripts target `/query`)
+  before anyone claims multi-step retrieval improves answers.
 - Each `/agent` call is independent: there are no sessions or follow-up questions
   (see `docs/plans/phase-4.md`, decision 7).
