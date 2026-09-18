@@ -13,6 +13,7 @@ from typing import NotRequired, TypedDict
 from arq.connections import RedisSettings
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from ragbridge.cache import Cache, RedisCache
 from ragbridge.config import Settings, get_settings
 from ragbridge.db.models import Document
 from ragbridge.db.session import create_engine, create_session_factory
@@ -23,6 +24,7 @@ from ragbridge.ingestion import ingest_document, parse_pages
 class JobContext(TypedDict):
     session_factory: async_sessionmaker[AsyncSession]
     embedder: Embedder
+    cache: Cache
     settings: Settings
     engine: NotRequired[AsyncEngine]
     """Only set by _on_startup, to dispose of in _on_shutdown - process_document
@@ -41,6 +43,7 @@ async def process_document(ctx: JobContext, document_id: str) -> None:
     """
     session_factory = ctx["session_factory"]
     embedder = ctx["embedder"]
+    cache = ctx["cache"]
     settings = ctx["settings"]
 
     async with session_factory() as session:
@@ -56,7 +59,7 @@ async def process_document(ctx: JobContext, document_id: str) -> None:
             if raw is None:
                 raise ValueError("document has no raw_content to process")
             pages = parse_pages(raw, document.content_type)
-            await ingest_document(session, document, pages, settings, embedder)
+            await ingest_document(session, document, pages, settings, embedder, cache)
             document.raw_content = None
         except Exception as error:  # broad on purpose: see docstring
             await session.rollback()
@@ -78,6 +81,7 @@ async def _on_startup(ctx: JobContext) -> None:
     ctx["engine"] = engine
     ctx["session_factory"] = create_session_factory(engine)
     ctx["embedder"] = LiteLLMEmbedder(settings)
+    ctx["cache"] = RedisCache(settings.redis_url)
     ctx["settings"] = settings
 
 

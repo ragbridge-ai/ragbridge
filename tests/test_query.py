@@ -4,6 +4,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ragbridge.chat import get_chatter
+from ragbridge.config import Settings, get_settings
 from ragbridge.rerank import FakeReranker, get_reranker
 
 
@@ -157,3 +159,68 @@ def test_query_rejects_top_k_above_the_maximum(
     response = client.post("/query", json={"question": "Anything?", "top_k": 21})
 
     assert response.status_code == 422
+
+
+def test_answer_cache_returns_the_cached_response_without_recomputing(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """With the cache enabled, a second identical query must not call the
+    chatter again - proven by swapping in a chatter that would answer
+    differently and confirming the response is unchanged, not merely
+    that two independent calls happened to agree.
+    """
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        answer_cache_enabled=True
+    )
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    client.post("/documents", files={"file": ("a.txt", b"Some fact.", "text/plain")})
+    first = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    class _StaleMarkerChatter:
+        async def answer(self, question: str, context: list[str]) -> str:
+            return "STALE - SHOULD NOT BE SEEN"
+
+    app_with_database.dependency_overrides[get_chatter] = lambda: _StaleMarkerChatter()
+    second = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    assert second.json() == first.json()
+    assert second.json()["answer"] != "STALE - SHOULD NOT BE SEEN"
+
+
+def test_answer_cache_is_invalidated_by_a_new_upload(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        answer_cache_enabled=True
+    )
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    client.post("/documents", files={"file": ("a.txt", b"Some fact.", "text/plain")})
+    client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    class _NewChatter:
+        async def answer(self, question: str, context: list[str]) -> str:
+            return "NEW ANSWER AFTER UPLOAD"
+
+    app_with_database.dependency_overrides[get_chatter] = lambda: _NewChatter()
+    client.post("/documents", files={"file": ("b.txt", b"Another fact.", "text/plain")})
+
+    response = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    assert response.json()["answer"] == "NEW ANSWER AFTER UPLOAD"
+
+
+def test_answer_cache_disabled_by_default_recomputes_every_time(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    client.post("/documents", files={"file": ("a.txt", b"Some fact.", "text/plain")})
+    client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    class _NewChatter:
+        async def answer(self, question: str, context: list[str]) -> str:
+            return "RECOMPUTED"
+
+    app_with_database.dependency_overrides[get_chatter] = lambda: _NewChatter()
+    response = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    assert response.json()["answer"] == "RECOMPUTED"

@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.auth import get_tenant
+from ragbridge.cache import Cache, get_cache
 from ragbridge.config import Settings, get_settings
 from ragbridge.db.models import Document, Tenant
 from ragbridge.db.session import get_session
@@ -46,6 +47,7 @@ async def upload_document(
     settings: Annotated[Settings, Depends(get_settings)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     job_queue: Annotated[JobQueue, Depends(get_job_queue)],
+    cache: Annotated[Cache, Depends(get_cache)],
 ) -> Document:
     """Upload a text, Markdown, or PDF document.
 
@@ -124,7 +126,7 @@ async def upload_document(
     session.add(document)
     await session.flush()
 
-    await ingest_document(session, document, pages, settings, embedder)
+    await ingest_document(session, document, pages, settings, embedder, cache)
 
     await session.commit()
     await session.refresh(document)
@@ -164,6 +166,7 @@ async def delete_document(
     document_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
     tenant: Annotated[Tenant, Depends(get_tenant)],
+    cache: Annotated[Cache, Depends(get_cache)],
 ) -> None:
     """Delete a document by id.
 
@@ -179,3 +182,4 @@ async def delete_document(
 
     await session.delete(document)
     await session.commit()
+    await cache.incr(f"corpus_version:{tenant.id}")

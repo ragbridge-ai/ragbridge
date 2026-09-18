@@ -13,6 +13,7 @@ both callers (see step 3, docs/plans/phase-3.md).
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ragbridge.cache import Cache
 from ragbridge.chunking import chunk_text
 from ragbridge.config import Settings
 from ragbridge.db.models import Chunk, Document
@@ -37,12 +38,19 @@ async def ingest_document(
     pages: list[str],
     settings: Settings,
     embedder: Embedder,
+    cache: Cache,
 ) -> None:
     """Chunk and embed already-parsed ``pages``, storing them against ``document``.
 
     Sets ``document.content`` and ``document.status = "ready"`` on
-    success. Never called with a page list that failed to parse - see
-    the module docstring for why that split matters.
+    success, and bumps ``document.tenant_id``'s corpus version - this is
+    the one place new chunks actually become searchable for both the
+    synchronous upload path and the background worker, which is what
+    makes it the right place to invalidate the tenant's answer cache
+    (decision 7, docs/plans/phase-3.md), not the moment a large upload
+    is merely *accepted* as ``"pending"``. Never called with a page list
+    that failed to parse - see the module docstring for why that split
+    matters.
     """
     is_pdf = document.content_type == "application/pdf"
     chunk_contents: list[str] = []
@@ -71,3 +79,4 @@ async def ingest_document(
 
     document.content = "\n\n".join(pages)
     document.status = "ready"
+    await cache.incr(f"corpus_version:{document.tenant_id}")

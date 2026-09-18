@@ -8,6 +8,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragbridge.auth import api_key_prefix, generate_api_key, hash_api_key
+from ragbridge.cache import FakeCache, get_cache
 from ragbridge.chat import FakeChatter, get_chatter
 from ragbridge.config import Settings
 from ragbridge.db.models import ApiKey, Tenant
@@ -53,10 +54,17 @@ def app_with_database() -> FastAPI:
     session_factory = create_session_factory(engine)
     app.state.session_factory = session_factory
     embedder = FakeEmbedder(settings.embedding_dimension)
+    cache = FakeCache()
     app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_chatter] = lambda: FakeChatter()
+    app.dependency_overrides[get_cache] = lambda: cache
     app.dependency_overrides[get_job_queue] = lambda: FakeJobQueue(
-        {"session_factory": session_factory, "embedder": embedder, "settings": settings}
+        {
+            "session_factory": session_factory,
+            "embedder": embedder,
+            "cache": cache,
+            "settings": settings,
+        }
     )
     return app
 

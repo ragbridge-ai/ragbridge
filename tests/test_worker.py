@@ -12,6 +12,7 @@ from fastapi import FastAPI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ragbridge.cache import FakeCache
 from ragbridge.config import Settings
 from ragbridge.db.models import Document, Tenant
 from ragbridge.embeddings import FakeEmbedder
@@ -43,6 +44,7 @@ def _ctx(session_factory: async_sessionmaker[AsyncSession], settings: Settings) 
     return {
         "session_factory": session_factory,
         "embedder": FakeEmbedder(settings.embedding_dimension),
+        "cache": FakeCache(),
         "settings": settings,
     }
 
