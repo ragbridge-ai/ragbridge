@@ -76,3 +76,4 @@ def test_chunk_round_trip(app_with_database: FastAPI) -> None:
     assert stored.content == "Hello, ragbridge."
     assert len(stored.embedding) == get_settings().embedding_dimension
     assert stored.metadata_ == {"page": 1}
+    assert stored.content_tsv == "'hello':1 'ragbridg':2"

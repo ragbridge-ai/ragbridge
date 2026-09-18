@@ -60,6 +60,7 @@ See the detailed plan: [docs/plans/phase-1.md](docs/plans/phase-1.md).
 ### Phase 2 — Quality (Weeks 5–6)
 Hybrid search (pgvector + PostgreSQL full-text search), reranking, test dataset,
 RAGAS evaluation with scores in the README.
+See the detailed plan: [docs/plans/phase-2.md](docs/plans/phase-2.md).
 
 ### Phase 3 — Production-ready (Weeks 7–8)
 API key authentication, multi-tenancy, background jobs for large files (Redis + worker),
