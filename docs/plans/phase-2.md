@@ -172,12 +172,17 @@ shape, but nothing combines them yet, and `POST /query` still only calls
      settings.
 4. **`feat(api): wire hybrid retrieval into POST /query`**
    - `hybrid_search(session, embedding, query, *, mode, candidates, top_k)`
-     in `retrieval.py`: runs `vector_search` and `keyword_search` concurrently
-     with `asyncio.gather` when `mode == "hybrid"` (they hit independent
-     tables and don't need to run in sequence), fuses with
-     `reciprocal_rank_fusion`, and returns the first `top_k` rows; `mode ==
-     "vector"` or `"keyword"` runs only that one arm, unfused, so the setting
-     can disable hybrid entirely without a second code path in the endpoint.
+     in `retrieval.py`: runs `vector_search` then `keyword_search` when
+     `mode == "hybrid"`, fuses with `reciprocal_rank_fusion`, and returns the
+     first `top_k` rows; `mode == "vector"` or `"keyword"` runs only that one
+     arm, unfused, so the setting can disable hybrid entirely without a
+     second code path in the endpoint.
+     **Corrected while implementing:** the two arms were planned to run
+     concurrently with `asyncio.gather`, since they query independent
+     indexes. They can't - both go through the same `AsyncSession`, and a
+     session allows only one query in flight at a time (it wraps a single
+     database connection, which is the actual constraint). They run one
+     after another instead.
    - `QueryRequest` gains an optional `mode` field, defaulting to
      `settings.retrieval_mode` when absent (decision: this lets step 4's
      evaluation script compare modes against the same running server without
