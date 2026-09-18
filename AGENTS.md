@@ -31,7 +31,8 @@ framework like LangChain.
 | ORM and migrations | SQLAlchemy 2.x + Alembic (from Phase 1) |
 | LLM access | LiteLLM (OpenAI, Anthropic, local models via Ollama) |
 | Queue and cache | Redis (from Phase 3) |
-| Agents | LangGraph (from Phase 4) |
+| Agents | Own bounded loop, no framework (from Phase 4) |
+| MCP | `mcp` SDK 2.x, `MCPServer` (from Phase 4) |
 | Evaluation | RAGAS (from Phase 2) |
 | Observability | Langfuse (from Phase 3) |
 | Lint and format | ruff |
@@ -69,8 +70,10 @@ Output: `v0.2.0`.
 See the detailed plan: [docs/plans/phase-3.md](docs/plans/phase-3.md).
 
 ### Phase 4 — Agents and MCP (Weeks 9–10)
-Multi-step agent mode with LangGraph, MCP server.
+Multi-step agent mode (own bounded loop - LangGraph was evaluated and rejected,
+see the plan's decision 1), MCP server exposing search over a tenant's documents.
 Output: `v0.3.0`.
+See the detailed plan: [docs/plans/phase-4.md](docs/plans/phase-4.md).
 
 ### Phase 5 — Deploy and release (Weeks 11–12)
 AWS infrastructure with Terraform, full docs, ADRs, demo in README.
