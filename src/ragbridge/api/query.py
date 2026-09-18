@@ -10,12 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ragbridge.auth import get_tenant
 from ragbridge.chat import Chatter, get_chatter
 from ragbridge.config import Settings, get_settings
+from ragbridge.db.models import Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.rerank import Reranker, get_reranker
 from ragbridge.retrieval import hybrid_search
 
-router = APIRouter(tags=["query"], dependencies=[Depends(get_tenant)])
+router = APIRouter(tags=["query"])
 
 SNIPPET_LENGTH = 300
 
@@ -44,6 +45,7 @@ class QueryResponse(BaseModel):
 async def answer_query(
     request: QueryRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     chatter: Annotated[Chatter, Depends(get_chatter)],
     reranker: Annotated[Reranker, Depends(get_reranker)],
@@ -58,6 +60,7 @@ async def answer_query(
         request.question,
         mode=request.mode or settings.retrieval_mode,
         candidates=settings.retrieval_candidates,
+        tenant_id=tenant.id,
     )
     rows = await reranker.rerank(request.question, candidates, request.top_k)
 

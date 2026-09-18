@@ -14,12 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ragbridge.auth import get_tenant
 from ragbridge.chunking import chunk_text
 from ragbridge.config import Settings, get_settings
-from ragbridge.db.models import Chunk, Document
+from ragbridge.db.models import Chunk, Document, Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.pdf import extract_pdf_pages
 
-router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depends(get_tenant)])
+router = APIRouter(prefix="/documents", tags=["documents"])
 
 ALLOWED_CONTENT_TYPES = {"text/plain", "text/markdown", "application/pdf"}
 
@@ -40,6 +40,7 @@ async def upload_document(
     response: Response,
     file: UploadFile,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
     settings: Annotated[Settings, Depends(get_settings)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
 ) -> Document:
@@ -47,7 +48,10 @@ async def upload_document(
 
     The content is parsed, split into chunks, and embedded before it is
     stored. Uploading the same content twice is not an error: the second
-    upload returns the existing document instead of redoing that work.
+    upload returns the existing document instead of redoing that work -
+    but only within the same tenant. sha256 is unique per tenant, not
+    globally, so two tenants uploading the same file each get their own
+    document (decision 3, docs/plans/phase-3.md).
     """
     filename = file.filename
     content_type = file.content_type
@@ -66,7 +70,9 @@ async def upload_document(
         raise HTTPException(status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="file too large")
 
     sha256 = hashlib.sha256(raw).hexdigest()
-    existing = await session.scalar(select(Document).where(Document.sha256 == sha256))
+    existing = await session.scalar(
+        select(Document).where(Document.tenant_id == tenant.id, Document.sha256 == sha256)
+    )
     if existing is not None:
         response.status_code = status.HTTP_200_OK
         return existing
@@ -88,6 +94,7 @@ async def upload_document(
             ) from exc
 
     document = Document(
+        tenant_id=tenant.id,
         filename=filename,
         content_type=content_type,
         sha256=sha256,
@@ -113,6 +120,7 @@ async def upload_document(
         session.add(
             Chunk(
                 document_id=document.id,
+                tenant_id=tenant.id,
                 chunk_index=index,
                 content=content,
                 embedding=embedding,
@@ -129,9 +137,12 @@ async def upload_document(
 @router.get("", response_model=list[DocumentOut])
 async def list_documents(
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
 ) -> Sequence[Document]:
-    """List all documents, newest first."""
-    result = await session.scalars(select(Document).order_by(Document.created_at.desc()))
+    """List the calling tenant's documents, newest first."""
+    result = await session.scalars(
+        select(Document).where(Document.tenant_id == tenant.id).order_by(Document.created_at.desc())
+    )
     return result.all()
 
 
@@ -139,9 +150,17 @@ async def list_documents(
 async def delete_document(
     document_id: uuid.UUID,
     session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
 ) -> None:
-    """Delete a document by id."""
-    document = await session.get(Document, document_id)
+    """Delete a document by id.
+
+    404, not 403, when the document belongs to another tenant: a 403
+    would confirm the id exists, which is itself information a caller
+    should not get for data it cannot see.
+    """
+    document = await session.scalar(
+        select(Document).where(Document.id == document_id, Document.tenant_id == tenant.id)
+    )
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
 

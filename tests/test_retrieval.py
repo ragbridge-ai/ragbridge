@@ -6,12 +6,26 @@ import uuid
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ragbridge.auth import hash_api_key
 from ragbridge.config import get_settings
-from ragbridge.db.models import Chunk, Document
+from ragbridge.db.models import ApiKey, Chunk, Document
 from ragbridge.embeddings import FakeEmbedder
 from ragbridge.retrieval import SearchResult, keyword_search, reciprocal_rank_fusion, vector_search
+
+
+async def _tenant_id_for_key(
+    session_factory: async_sessionmaker[AsyncSession], key: str
+) -> uuid.UUID:
+    """Resolve the tenant id behind a raw API key, for tests calling the
+    retrieval functions directly - they need a tenant_id, not a header.
+    """
+    async with session_factory() as session:
+        api_key = await session.scalar(select(ApiKey).where(ApiKey.key_hash == hash_api_key(key)))
+        assert api_key is not None
+        return api_key.tenant_id
 
 
 def _make_chunk() -> Chunk:
@@ -50,11 +64,12 @@ def test_keyword_search_finds_a_literal_token_that_vector_search_misses(
 
     async def run_both_arms() -> tuple[list[str], list[str]]:
         session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+        tenant_id = await _tenant_id_for_key(session_factory, tenant_with_key)
         dimension = get_settings().embedding_dimension
         [embedding] = await FakeEmbedder(dimension).embed(["ERR_4021"])
         async with session_factory() as session:
-            vector_rows = await vector_search(session, embedding, limit=5)
-            keyword_rows = await keyword_search(session, "ERR_4021", limit=5)
+            vector_rows = await vector_search(session, embedding, limit=5, tenant_id=tenant_id)
+            keyword_rows = await keyword_search(session, "ERR_4021", limit=5, tenant_id=tenant_id)
         return (
             [chunk.content for chunk, _, _ in vector_rows],
             [chunk.content for chunk, _, _ in keyword_rows],
@@ -82,8 +97,9 @@ def test_keyword_search_excludes_chunks_with_no_matching_terms(
 
     async def run_keyword_search() -> list[str]:
         session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+        tenant_id = await _tenant_id_for_key(session_factory, tenant_with_key)
         async with session_factory() as session:
-            rows = await keyword_search(session, "ERR_4021", limit=5)
+            rows = await keyword_search(session, "ERR_4021", limit=5, tenant_id=tenant_id)
         return [chunk.content for chunk, _, _ in rows]
 
     results = asyncio.run(run_keyword_search())

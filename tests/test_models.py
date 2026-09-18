@@ -17,7 +17,12 @@ def test_document_round_trip(app_with_database: FastAPI) -> None:
         content = "Hello, ragbridge."
 
         async with session_factory() as session:
+            tenant = Tenant(name="acme")
+            session.add(tenant)
+            await session.flush()
+
             document = Document(
+                tenant_id=tenant.id,
                 filename="hello.txt",
                 content_type="text/plain",
                 sha256=hashlib.sha256(content.encode()).hexdigest(),
@@ -46,7 +51,12 @@ def test_chunk_round_trip(app_with_database: FastAPI) -> None:
         dimension = get_settings().embedding_dimension
 
         async with session_factory() as session:
+            tenant = Tenant(name="acme")
+            session.add(tenant)
+            await session.flush()
+
             document = Document(
+                tenant_id=tenant.id,
                 filename="hello.txt",
                 content_type="text/plain",
                 sha256=hashlib.sha256(content.encode()).hexdigest(),
@@ -57,6 +67,7 @@ def test_chunk_round_trip(app_with_database: FastAPI) -> None:
 
             chunk = Chunk(
                 document_id=document.id,
+                tenant_id=tenant.id,
                 chunk_index=0,
                 content=content,
                 embedding=[0.0] * dimension,
