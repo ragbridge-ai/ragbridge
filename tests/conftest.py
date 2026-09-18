@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ragbridge.agent.planner import FakePlanner, get_planner
 from ragbridge.auth import api_key_prefix, generate_api_key, hash_api_key
 from ragbridge.cache import FakeCache, get_cache
 from ragbridge.chat import FakeChatter, get_chatter
@@ -57,6 +58,7 @@ def app_with_database() -> FastAPI:
     cache = FakeCache()
     app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_chatter] = lambda: FakeChatter()
+    app.dependency_overrides[get_planner] = lambda: FakePlanner()
     app.dependency_overrides[get_cache] = lambda: cache
     app.dependency_overrides[get_job_queue] = lambda: FakeJobQueue(
         {
