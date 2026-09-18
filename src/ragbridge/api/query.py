@@ -1,16 +1,17 @@
 """POST /query: answer a question using retrieval-augmented generation."""
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.chat import Chatter, get_chatter
+from ragbridge.config import Settings, get_settings
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
-from ragbridge.retrieval import vector_search
+from ragbridge.retrieval import hybrid_search
 
 router = APIRouter(tags=["query"])
 
@@ -20,6 +21,8 @@ SNIPPET_LENGTH = 300
 class QueryRequest(BaseModel):
     question: str
     top_k: int = Field(default=5, ge=1, le=20)
+    mode: Literal["hybrid", "vector", "keyword"] | None = None
+    """Which retrieval arm(s) to use. Defaults to settings.retrieval_mode."""
 
 
 class Source(BaseModel):
@@ -41,11 +44,19 @@ async def answer_query(
     session: Annotated[AsyncSession, Depends(get_session)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     chatter: Annotated[Chatter, Depends(get_chatter)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> QueryResponse:
     """Embed the question, retrieve the nearest chunks, and answer from them."""
     [question_embedding] = await embedder.embed([request.question])
 
-    rows = await vector_search(session, question_embedding, request.top_k)
+    rows = await hybrid_search(
+        session,
+        question_embedding,
+        request.question,
+        mode=request.mode or settings.retrieval_mode,
+        candidates=settings.retrieval_candidates,
+        top_k=request.top_k,
+    )
 
     answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
     sources = [
