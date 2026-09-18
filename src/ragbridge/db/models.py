@@ -5,7 +5,16 @@ from datetime import datetime
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Computed, DateTime, ForeignKey, Index, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    Computed,
+    DateTime,
+    ForeignKey,
+    Index,
+    LargeBinary,
+    Text,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
@@ -51,12 +60,14 @@ class ApiKey(Base):
 class Document(Base):
     """An uploaded document, before chunking and embedding.
 
-    ``content`` keeps the raw uploaded text, so the document can be
-    re-chunked later (once chunking exists) without asking the user to
-    upload it again. ``sha256`` is unique per tenant, not globally - two
-    tenants uploading the same file must get two independent documents,
-    or the second tenant would silently receive a document it never
-    uploaded (see decision 3, docs/plans/phase-3.md).
+    ``content`` keeps the parsed, joined text, so the document can be
+    re-chunked later without asking the user to upload it again. It is
+    nullable because a document being processed asynchronously
+    (``status`` is ``"pending"`` or ``"processing"``) has no parsed
+    content yet - see ``raw_content``. ``sha256`` is unique per tenant,
+    not globally - two tenants uploading the same file must get two
+    independent documents, or the second tenant would silently receive a
+    document it never uploaded (see decision 3, docs/plans/phase-3.md).
     """
 
     __tablename__ = "documents"
@@ -69,7 +80,22 @@ class Document(Base):
     filename: Mapped[str]
     content_type: Mapped[str]
     sha256: Mapped[str]
-    content: Mapped[str] = mapped_column(Text)
+    content: Mapped[str | None] = mapped_column(Text, default=None)
+    status: Mapped[str] = mapped_column(default="pending")
+    """One of "pending", "processing", "ready", "failed" (ragbridge.api.documents.DocumentStatus).
+
+    Not a database enum or CHECK constraint - kept as a plain column,
+    validated at the Pydantic response-model level, the same way
+    Settings.retrieval_mode is a Literal enforced by Pydantic and not by
+    the database.
+    """
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+    """The failure reason, set only when status is "failed"."""
+    raw_content: Mapped[bytes | None] = mapped_column(LargeBinary, default=None)
+    """The original uploaded bytes, kept only until a background worker
+    finishes ingesting them (see ragbridge.worker) - unset for a document
+    processed synchronously, which never needs its raw bytes again.
+    """
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
