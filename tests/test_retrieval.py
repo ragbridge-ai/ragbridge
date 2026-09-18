@@ -1,14 +1,33 @@
-"""Tests for the vector and keyword search functions."""
+"""Tests for the vector and keyword search functions, and their fusion."""
 
 import asyncio
+import uuid
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragbridge.config import get_settings
+from ragbridge.db.models import Chunk, Document
 from ragbridge.embeddings import FakeEmbedder
-from ragbridge.retrieval import keyword_search, vector_search
+from ragbridge.retrieval import SearchResult, keyword_search, reciprocal_rank_fusion, vector_search
+
+
+def _make_chunk() -> Chunk:
+    """A ``Chunk`` built in memory, never written to the database.
+
+    ``reciprocal_rank_fusion`` is a pure function - it never touches a
+    session - so its tests only need an object with an ``id``, the same
+    way ``chunk_text`` (Phase 1 step 3) needed only plain strings.
+    """
+    return Chunk(id=uuid.uuid4(), document_id=uuid.uuid4(), chunk_index=0, content="", metadata_={})
+
+
+def _make_document() -> Document:
+    return Document(
+        id=uuid.uuid4(), filename="a.txt", content_type="text/plain", sha256="x", content="x"
+    )
 
 
 def test_keyword_search_finds_a_literal_token_that_vector_search_misses(
@@ -70,3 +89,66 @@ def test_keyword_search_excludes_chunks_with_no_matching_terms(
     results = asyncio.run(run_keyword_search())
 
     assert results == []
+
+
+def test_reciprocal_rank_fusion_favors_agreement_over_a_single_arms_top_pick() -> None:
+    """A chunk both arms rank around the middle beats one arm's favorite.
+
+    Concrete numbers from docs/plans/phase-2.md step 2: rank 1 in one
+    ranking and rank 8 in the other scores 1/61 + 1/68 ≈ 0.0311; rank 3 in
+    both scores 1/63 + 1/63 ≈ 0.0317 and wins - RRF rewards a chunk both
+    arms consider reasonably relevant over a chunk one arm loves and the
+    other barely surfaces.
+    """
+    document = _make_document()
+    top_once = _make_chunk()
+    mid_twice = _make_chunk()
+    fillers = [_make_chunk() for _ in range(7)]
+
+    ranking_one: list[SearchResult] = [
+        (top_once, document, 0.0),  # rank 1
+        (fillers[0], document, 0.0),  # rank 2
+        (mid_twice, document, 0.0),  # rank 3
+    ]
+    ranking_two: list[SearchResult] = [
+        (fillers[1], document, 0.0),  # rank 1
+        (fillers[2], document, 0.0),  # rank 2
+        (mid_twice, document, 0.0),  # rank 3
+        (fillers[3], document, 0.0),  # rank 4
+        (fillers[4], document, 0.0),  # rank 5
+        (fillers[5], document, 0.0),  # rank 6
+        (fillers[6], document, 0.0),  # rank 7
+        (top_once, document, 0.0),  # rank 8
+    ]
+
+    fused = reciprocal_rank_fusion([ranking_one, ranking_two])
+
+    fused_ids = [chunk.id for chunk, _, _ in fused]
+    assert fused_ids[0] == mid_twice.id
+    assert fused_ids[1] == top_once.id
+
+    scores = {chunk.id: score for chunk, _, score in fused}
+    assert scores[top_once.id] == pytest.approx(1 / 61 + 1 / 68)
+    assert scores[mid_twice.id] == pytest.approx(1 / 63 + 1 / 63)
+
+
+def test_reciprocal_rank_fusion_includes_items_found_by_only_one_arm() -> None:
+    document = _make_document()
+    only_in_first = _make_chunk()
+    only_in_second = _make_chunk()
+
+    fused = reciprocal_rank_fusion(
+        [
+            [(only_in_first, document, 0.0)],
+            [(only_in_second, document, 0.0)],
+        ]
+    )
+
+    fused_ids = {chunk.id for chunk, _, _ in fused}
+    assert fused_ids == {only_in_first.id, only_in_second.id}
+    for _, _, score in fused:
+        assert score == pytest.approx(1 / 61)
+
+
+def test_reciprocal_rank_fusion_of_no_rankings_returns_empty_list() -> None:
+    assert reciprocal_rank_fusion([]) == []

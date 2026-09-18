@@ -6,6 +6,9 @@ Reciprocal Rank Fusion; this step only gives each arm a home and a shared
 return shape, so fusion has something uniform to work with.
 """
 
+import uuid
+from collections.abc import Sequence
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,3 +61,32 @@ async def keyword_search(session: AsyncSession, query: str, limit: int) -> list[
         .limit(limit)
     )
     return [(chunk, document, rank) for chunk, document, rank in result.all()]
+
+
+def reciprocal_rank_fusion(
+    rankings: Sequence[Sequence[SearchResult]], *, k: int = 60
+) -> list[SearchResult]:
+    """Merge several rankings of the same items with Reciprocal Rank Fusion.
+
+    Each ranking is one retrieval arm's results, best first. An item is
+    identified by its chunk id; its fused score is the sum, over every
+    ranking it appears in, of ``1 / (k + rank)`` (rank is 1-based). This
+    uses only an item's *position* in each ranking, never the arm's own
+    score - a cosine similarity and a ``ts_rank`` are not on a comparable
+    scale, so combining them by position needs no tuning and no score
+    normalisation (see docs/plans/phase-2.md, decision 1).
+
+    A pure function: no session, no ``await``. Returns one row per
+    distinct chunk, sorted by fused score, best first.
+    """
+    fused_scores: dict[uuid.UUID, float] = {}
+    rows_by_chunk_id: dict[uuid.UUID, tuple[Chunk, Document]] = {}
+
+    for ranking in rankings:
+        for rank, (chunk, document, _) in enumerate(ranking, start=1):
+            fused_scores[chunk.id] = fused_scores.get(chunk.id, 0.0) + 1 / (k + rank)
+            rows_by_chunk_id.setdefault(chunk.id, (chunk, document))
+
+    merged = [(*rows_by_chunk_id[chunk_id], score) for chunk_id, score in fused_scores.items()]
+    merged.sort(key=lambda row: row[2], reverse=True)
+    return merged
