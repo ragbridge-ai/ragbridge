@@ -6,12 +6,15 @@ embedder, not on LiteLLM or any specific provider. Tests and CI use
 or running Ollama instance is needed to run the test suite.
 """
 
+import hashlib
+import json
 import random
 from typing import Annotated, Protocol
 
 import litellm
 from fastapi import Depends
 
+from ragbridge.cache import Cache, get_cache
 from ragbridge.config import Settings, get_settings
 
 
@@ -54,11 +57,62 @@ class FakeEmbedder:
         return [rng.uniform(-1.0, 1.0) for _ in range(self._dimension)]
 
 
-def get_embedder(settings: Annotated[Settings, Depends(get_settings)]) -> Embedder:
-    """FastAPI dependency returning the real embedder.
+class CachingEmbedder:
+    """Wraps another ``Embedder``, caching each text's vector by (model, text).
+
+    An embedding is a pure function of ``(model, text)``: putting the
+    model name in the cache key makes a stale hit impossible, which is
+    what makes this safe to enable by default (decision 7,
+    docs/plans/phase-3.md) - unlike the answer cache, this one never
+    needs to be invalidated.
+    """
+
+    def __init__(self, embedder: Embedder, cache: Cache, *, model: str, ttl: int) -> None:
+        self._embedder = embedder
+        self._cache = cache
+        self._model = model
+        self._ttl = ttl
+
+    def _key(self, text: str) -> str:
+        digest = hashlib.sha256(text.encode()).hexdigest()
+        return f"embedding:{self._model}:{digest}"
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+
+        keys = [self._key(text) for text in texts]
+        values: list[str | None] = [await self._cache.get(key) for key in keys]
+
+        misses = [index for index, value in enumerate(values) if value is None]
+        if misses:
+            fresh = await self._embedder.embed([texts[index] for index in misses])
+            for index, vector in zip(misses, fresh, strict=True):
+                serialized = json.dumps(vector)
+                values[index] = serialized
+                await self._cache.set(keys[index], serialized, ttl=self._ttl)
+
+        result: list[list[float]] = []
+        for value in values:
+            assert value is not None  # every miss was just filled in above
+            result.append(json.loads(value))
+        return result
+
+
+def get_embedder(
+    settings: Annotated[Settings, Depends(get_settings)],
+    cache: Annotated[Cache, Depends(get_cache)],
+) -> Embedder:
+    """FastAPI dependency returning the real embedder, cached unless disabled.
 
     Tests override this with a ``FakeEmbedder`` via
     ``app.dependency_overrides``, the same way ``app_with_database``
-    overrides the database engine.
+    overrides the database engine - bypassing ``CachingEmbedder``
+    entirely, since a deterministic fake needs no caching to test.
     """
-    return LiteLLMEmbedder(settings)
+    base = LiteLLMEmbedder(settings)
+    if settings.embedding_cache_ttl <= 0:
+        return base
+    return CachingEmbedder(
+        base, cache, model=settings.embedding_model, ttl=settings.embedding_cache_ttl
+    )
