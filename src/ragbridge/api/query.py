@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ragbridge import tracing
 from ragbridge.auth import get_tenant
 from ragbridge.cache import Cache, get_cache
 from ragbridge.chat import Chatter, get_chatter
@@ -62,7 +63,15 @@ async def answer_query(
     Bumping it invalidates every cached answer for that tenant at once,
     without enumerating or deleting a single key: the old keys simply
     become unreachable and expire on their own TTL (decision 7,
-    docs/plans/phase-3.md).
+    docs/plans/phase-3.md). A cache hit returns before the span below
+    even opens - nothing was computed, so there is nothing to trace.
+
+    The embedding, retrieval, reranking, and generation steps run
+    inside one ``tracing.span``, so LiteLLM's own per-call spans (the
+    embedding call, the chat completion) nest under it instead of each
+    appearing as an unrelated top-level trace - retrieval itself is not
+    an LLM call and would otherwise never appear in a trace at all
+    (decision 8, docs/plans/phase-3.md).
     """
     cache_key: str | None = None
     if settings.answer_cache_enabled:
@@ -75,30 +84,34 @@ async def answer_query(
         if cached is not None:
             return QueryResponse.model_validate_json(cached)
 
-    [question_embedding] = await embedder.embed([request.question])
+    with tracing.span(
+        settings, "query", question=request.question, mode=request.mode, top_k=request.top_k
+    ) as span:
+        [question_embedding] = await embedder.embed([request.question])
 
-    candidates = await hybrid_search(
-        session,
-        question_embedding,
-        request.question,
-        mode=request.mode or settings.retrieval_mode,
-        candidates=settings.retrieval_candidates,
-        tenant_id=tenant.id,
-    )
-    rows = await reranker.rerank(request.question, candidates, request.top_k)
-
-    answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
-    sources = [
-        Source(
-            document_id=document.id,
-            filename=document.filename,
-            chunk_index=chunk.chunk_index,
-            snippet=chunk.content[:SNIPPET_LENGTH],
-            score=score,
+        candidates = await hybrid_search(
+            session,
+            question_embedding,
+            request.question,
+            mode=request.mode or settings.retrieval_mode,
+            candidates=settings.retrieval_candidates,
+            tenant_id=tenant.id,
         )
-        for chunk, document, score in rows
-    ]
-    response = QueryResponse(answer=answer, sources=sources)
+        rows = await reranker.rerank(request.question, candidates, request.top_k)
+
+        answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
+        sources = [
+            Source(
+                document_id=document.id,
+                filename=document.filename,
+                chunk_index=chunk.chunk_index,
+                snippet=chunk.content[:SNIPPET_LENGTH],
+                score=score,
+            )
+            for chunk, document, score in rows
+        ]
+        response = QueryResponse(answer=answer, sources=sources)
+        span.update(output=response.model_dump())
 
     if cache_key is not None:
         await cache.set(cache_key, response.model_dump_json(), ttl=settings.answer_cache_ttl)
