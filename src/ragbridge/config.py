@@ -62,6 +62,41 @@ class Settings(BaseSettings):
     rerank_model: str = "cohere/rerank-v3.5"
     """LiteLLM rerank model name, used only when rerank_enabled is true."""
 
+    redis_url: str = "redis://localhost:6379/0"
+    """Connection used to enqueue and run background jobs (arq)."""
+    async_processing_threshold: int = 100_000
+    """Uploads larger than this many bytes are processed by the background
+    worker instead of within the request (see ragbridge.jobs, ragbridge.worker).
+    """
+
+    embedding_cache_ttl: int = 86_400
+    """Seconds a cached embedding lives. 0 disables the embedding cache.
+
+    Safe to enable by default: an embedding is a pure function of
+    (model, text), so a cached hit can never be stale (decision 7,
+    docs/plans/phase-3.md).
+    """
+    answer_cache_enabled: bool = False
+    """Whether POST /query caches whole answers, keyed by a per-tenant
+    corpus version that any document upload or delete bumps.
+
+    Off by default, unlike the embedding cache: a cached answer can go
+    stale the moment a document is uploaded or deleted, so caching it
+    is a deliberate tradeoff the operator opts into, not a free win.
+    """
+    answer_cache_ttl: int = 3_600
+    """Seconds a cached answer lives, used only when answer_cache_enabled."""
+
+    langfuse_public_key: str = ""
+    """Enables Langfuse tracing and cost tracking when set together with
+    langfuse_secret_key. Empty by default: tracing is absent, not merely
+    disabled, until both keys are configured (decision 8,
+    docs/plans/phase-3.md).
+    """
+    langfuse_secret_key: str = ""
+    langfuse_host: str = "https://cloud.langfuse.com"
+    """A self-hosted Langfuse instance can point this elsewhere."""
+
 
 @lru_cache
 def get_settings() -> Settings:

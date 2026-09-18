@@ -156,9 +156,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--top-k", type=int, default=5)
+    parser.add_argument("--api-key", required=True, help="API key created with ragbridge-admin.")
     args = parser.parse_args()
 
-    with httpx.Client(base_url=args.base_url, timeout=60.0) as client:
+    headers = {"Authorization": f"Bearer {args.api_key}"}
+    with httpx.Client(base_url=args.base_url, headers=headers, timeout=60.0) as client:
         upload_corpus(client)
         result = evaluate_retrieval(client, load_dataset(), top_k=args.top_k)
 

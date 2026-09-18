@@ -4,10 +4,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ragbridge.chat import get_chatter
+from ragbridge.config import Settings, get_settings
 from ragbridge.rerank import FakeReranker, get_reranker
 
 
-def test_query_ranks_the_exact_matching_chunk_first(app_with_database: FastAPI) -> None:
+def test_query_ranks_the_exact_matching_chunk_first(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
     """Default mode is "hybrid" (settings.retrieval_mode), so score is a
     fused RRF score, not 1 - cosine_distance. The exact-match chunk ranks
     first in both arms - the only chunk keyword search matches at all
@@ -16,7 +20,7 @@ def test_query_ranks_the_exact_matching_chunk_first(app_with_database: FastAPI) 
     vector. Its score is therefore sum(1 / (k + 1)) over both arms:
     1/61 + 1/61 (docs/plans/phase-2.md, step 2).
     """
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     exact_match = "The mitochondria is the powerhouse of the cell."
     client.post("/documents", files={"file": ("a.txt", exact_match.encode(), "text/plain")})
     other = "Paris is the capital of France."
@@ -31,11 +35,13 @@ def test_query_ranks_the_exact_matching_chunk_first(app_with_database: FastAPI) 
     assert body["answer"] == "Fake answer using 2 chunk(s)."
 
 
-def test_query_mode_vector_reproduces_the_pre_hybrid_ranking(app_with_database: FastAPI) -> None:
+def test_query_mode_vector_reproduces_the_pre_hybrid_ranking(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
     """mode="vector" runs only vector_search, unfused - score is back to
     1 - cosine_distance, exactly Phase 1's behaviour.
     """
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     exact_match = "The mitochondria is the powerhouse of the cell."
     client.post("/documents", files={"file": ("a.txt", exact_match.encode(), "text/plain")})
 
@@ -47,6 +53,7 @@ def test_query_mode_vector_reproduces_the_pre_hybrid_ranking(app_with_database: 
 
 def test_query_hybrid_mode_surfaces_a_keyword_match_that_vector_alone_misses(
     app_with_database: FastAPI,
+    tenant_with_key: str,
 ) -> None:
     """The retrieval gap hybrid search closes, end to end through the API.
 
@@ -56,7 +63,7 @@ def test_query_hybrid_mode_surfaces_a_keyword_match_that_vector_alone_misses(
     rewards a chunk both arms rank well over one arm's own favourite
     (see test_retrieval.py for the arm-level version of this test).
     """
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     error_chunk = "Error code ERR_4021 means the upload exceeded the size limit."
     other_chunk = "Cats are independent and curious animals."
     client.post("/documents", files={"file": ("errors.txt", error_chunk.encode(), "text/plain")})
@@ -71,15 +78,17 @@ def test_query_hybrid_mode_surfaces_a_keyword_match_that_vector_alone_misses(
     assert vector_response.json()["sources"][0]["snippet"] != error_chunk
 
 
-def test_query_rejects_an_invalid_retrieval_mode(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_query_rejects_an_invalid_retrieval_mode(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
 
     response = client.post("/query", json={"question": "Anything?", "mode": "fuzzy"})
 
     assert response.status_code == 422
 
 
-def test_query_uses_the_rerankers_order(app_with_database: FastAPI) -> None:
+def test_query_uses_the_rerankers_order(app_with_database: FastAPI, tenant_with_key: str) -> None:
     """POST /query actually calls the reranker and returns its order.
 
     With the default NoOpReranker, hybrid mode ranks the error-code chunk
@@ -89,7 +98,7 @@ def test_query_uses_the_rerankers_order(app_with_database: FastAPI) -> None:
     output, not retrieval's own order.
     """
     app_with_database.dependency_overrides[get_reranker] = lambda: FakeReranker()
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     error_chunk = "Error code ERR_4021 means the upload exceeded the size limit."
     other_chunk = "Cats are independent and curious animals."
     client.post("/documents", files={"file": ("errors.txt", error_chunk.encode(), "text/plain")})
@@ -101,8 +110,8 @@ def test_query_uses_the_rerankers_order(app_with_database: FastAPI) -> None:
     assert snippets == [other_chunk, error_chunk]
 
 
-def test_query_limits_sources_to_top_k(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_query_limits_sources_to_top_k(app_with_database: FastAPI, tenant_with_key: str) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     for i in range(3):
         content = f"Fact number {i}.".encode()
         client.post("/documents", files={"file": (f"{i}.txt", content, "text/plain")})
@@ -113,8 +122,10 @@ def test_query_limits_sources_to_top_k(app_with_database: FastAPI) -> None:
     assert len(response.json()["sources"]) == 2
 
 
-def test_query_with_no_documents_returns_no_sources(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_query_with_no_documents_returns_no_sources(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
 
     response = client.post("/query", json={"question": "Anything?"})
 
@@ -124,8 +135,8 @@ def test_query_with_no_documents_returns_no_sources(app_with_database: FastAPI) 
     assert body["answer"] == "Fake answer using 0 chunk(s)."
 
 
-def test_query_source_fields(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_query_source_fields(app_with_database: FastAPI, tenant_with_key: str) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     content = "Some fact about ragbridge."
     files = {"file": ("notes.txt", content.encode(), "text/plain")}
     upload = client.post("/documents", files=files)
@@ -140,9 +151,76 @@ def test_query_source_fields(app_with_database: FastAPI) -> None:
     assert source["snippet"] == content
 
 
-def test_query_rejects_top_k_above_the_maximum(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_query_rejects_top_k_above_the_maximum(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
 
     response = client.post("/query", json={"question": "Anything?", "top_k": 21})
 
     assert response.status_code == 422
+
+
+def test_answer_cache_returns_the_cached_response_without_recomputing(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """With the cache enabled, a second identical query must not call the
+    chatter again - proven by swapping in a chatter that would answer
+    differently and confirming the response is unchanged, not merely
+    that two independent calls happened to agree.
+    """
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        answer_cache_enabled=True
+    )
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    client.post("/documents", files={"file": ("a.txt", b"Some fact.", "text/plain")})
+    first = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    class _StaleMarkerChatter:
+        async def answer(self, question: str, context: list[str]) -> str:
+            return "STALE - SHOULD NOT BE SEEN"
+
+    app_with_database.dependency_overrides[get_chatter] = lambda: _StaleMarkerChatter()
+    second = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    assert second.json() == first.json()
+    assert second.json()["answer"] != "STALE - SHOULD NOT BE SEEN"
+
+
+def test_answer_cache_is_invalidated_by_a_new_upload(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        answer_cache_enabled=True
+    )
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    client.post("/documents", files={"file": ("a.txt", b"Some fact.", "text/plain")})
+    client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    class _NewChatter:
+        async def answer(self, question: str, context: list[str]) -> str:
+            return "NEW ANSWER AFTER UPLOAD"
+
+    app_with_database.dependency_overrides[get_chatter] = lambda: _NewChatter()
+    client.post("/documents", files={"file": ("b.txt", b"Another fact.", "text/plain")})
+
+    response = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    assert response.json()["answer"] == "NEW ANSWER AFTER UPLOAD"
+
+
+def test_answer_cache_disabled_by_default_recomputes_every_time(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    client.post("/documents", files={"file": ("a.txt", b"Some fact.", "text/plain")})
+    client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    class _NewChatter:
+        async def answer(self, question: str, context: list[str]) -> str:
+            return "RECOMPUTED"
+
+    app_with_database.dependency_overrides[get_chatter] = lambda: _NewChatter()
+    response = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    assert response.json()["answer"] == "RECOMPUTED"

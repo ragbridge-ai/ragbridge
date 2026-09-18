@@ -5,11 +5,16 @@ import asyncio
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ragbridge.auth import api_key_prefix, generate_api_key, hash_api_key
+from ragbridge.cache import FakeCache, get_cache
 from ragbridge.chat import FakeChatter, get_chatter
 from ragbridge.config import Settings
+from ragbridge.db.models import ApiKey, Tenant
 from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.embeddings import FakeEmbedder, get_embedder
+from ragbridge.jobs import FakeJobQueue, get_job_queue
 from ragbridge.main import create_app
 
 
@@ -27,7 +32,9 @@ def _reset_database() -> None:
     async def truncate_all_tables() -> None:
         engine = create_engine(Settings())
         async with engine.begin() as connection:
-            await connection.execute(text("TRUNCATE TABLE chunks, documents"))
+            await connection.execute(
+                text("TRUNCATE TABLE chunks, documents, api_keys, tenants CASCADE")
+            )
         await engine.dispose()
 
     asyncio.run(truncate_all_tables())
@@ -44,10 +51,62 @@ def app_with_database() -> FastAPI:
     app = create_app()
     settings = Settings()
     engine = create_engine(settings)
-    app.state.session_factory = create_session_factory(engine)
-    app.dependency_overrides[get_embedder] = lambda: FakeEmbedder(settings.embedding_dimension)
+    session_factory = create_session_factory(engine)
+    app.state.session_factory = session_factory
+    embedder = FakeEmbedder(settings.embedding_dimension)
+    cache = FakeCache()
+    app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_chatter] = lambda: FakeChatter()
+    app.dependency_overrides[get_cache] = lambda: cache
+    app.dependency_overrides[get_job_queue] = lambda: FakeJobQueue(
+        {
+            "session_factory": session_factory,
+            "embedder": embedder,
+            "cache": cache,
+            "settings": settings,
+        }
+    )
     return app
+
+
+async def _create_tenant_with_key(
+    session_factory: async_sessionmaker[AsyncSession], name: str
+) -> str:
+    """Create a tenant with one active API key, returning the raw key."""
+    key = generate_api_key()
+    async with session_factory() as session:
+        tenant = Tenant(name=name)
+        session.add(tenant)
+        await session.flush()
+        session.add(
+            ApiKey(
+                tenant_id=tenant.id,
+                key_hash=hash_api_key(key),
+                prefix=api_key_prefix(key),
+                name="test-key",
+            )
+        )
+        await session.commit()
+    return key
+
+
+@pytest.fixture
+def tenant_with_key(app_with_database: FastAPI) -> str:
+    """Create a tenant with one active API key, returning the raw key.
+
+    Most tests only care that a valid key exists, not which tenant it
+    belongs to - the tenant and its api_keys row are plumbing that
+    get_tenant needs, not something these tests inspect.
+    """
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+    return asyncio.run(_create_tenant_with_key(session_factory, "test-tenant"))
+
+
+@pytest.fixture
+def second_tenant_with_key(app_with_database: FastAPI) -> str:
+    """A second, independent tenant and key - for tenant isolation tests."""
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+    return asyncio.run(_create_tenant_with_key(session_factory, "test-tenant-2"))
 
 
 @pytest.fixture
