@@ -28,8 +28,15 @@ build-backend = "uv_build"
 dev = [
     "fpdf2>=2.8.8",
     "httpx>=0.28.1",
+    # Pinned below 0.4: ragas 0.4.3 unconditionally imports
+    # langchain_community.chat_models.vertexai at `import ragas` time, a
+    # submodule langchain-community removed starting in 0.4 as part of its
+    # sunset (see docs/adr/0004-answer-quality-evaluation-with-ragas.md).
+    # Without this pin, `import ragas` fails with ModuleNotFoundError.
+    "langchain-community<0.4",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
+    "ragas>=0.4.3",
     "ruff>=0.16.8",
 ]
 
