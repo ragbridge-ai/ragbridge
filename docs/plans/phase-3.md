@@ -555,3 +555,101 @@ Proposed commit breakdown:
      changed and the key no longer matches); with the cache left at its
      default (disabled), identical queries are recomputed every time,
      exactly as in every earlier phase.
+
+## Step 5 detail — Langfuse tracing and cost tracking
+
+Branch: `feat/phase-3-langfuse` (created from `main`, off the merged step 4).
+The last piece of decision 8: LiteLLM already knows every provider's token
+counts and per-model prices, so cost tracking is a callback registration, not
+a pricing table this project would have to keep current.
+
+**Real, version-specific incompatibility found and fixed, verified against
+the actually-installed packages (`litellm==1.101.0`, `langfuse==4.15.4`)
+before writing any application code - the same discipline Phase 2's RAGAS
+integration needed, for the same reason:** LiteLLM's documented, most common
+integration is `litellm.success_callback = ["langfuse"]`. Registering it and
+making one real call (verified against a local Ollama) raises
+`AttributeError: module 'langfuse' has no attribute 'version'` the moment
+the call completes - `litellm`'s `langfuse.py` integration reads
+`langfuse.version.__version__` to detect the SDK's feature level, an
+attribute that existed on the `langfuse` v2 SDK and was removed when
+`langfuse` v3 rewrote itself around OpenTelemetry (the currently-installable
+`langfuse` is v4). LiteLLM ships a second, OpenTelemetry-native integration
+for exactly this SDK generation - `litellm.success_callback =
+["langfuse_otel"]` - confirmed working end to end against the same real
+Ollama call, span open to close, with a real (if deliberately invalid)
+Langfuse key: the only failure was the expected `401 Unauthorized` on
+export, not a code-level incompatibility. `ragbridge.tracing` registers
+`"langfuse_otel"`, never `"langfuse"`. See `docs/adr/0005-...` for the full
+account.
+
+**Bridging settings into `os.environ`, and why:** LiteLLM's Langfuse
+integrations - both of them - read `LANGFUSE_PUBLIC_KEY`,
+`LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` from `os.environ` directly, not
+from anything this project's `Settings` object exposes to them.
+`pydantic-settings` reads a `.env` file's values into its own merged
+configuration without exporting them back into `os.environ` - so a key set
+only in `.env` (this project's normal configuration path, per every setting
+so far) would be invisible to LiteLLM's integration even though
+`Settings().langfuse_public_key` sees it correctly. `ragbridge.tracing.configure`
+bridges the three settings into `os.environ` itself, once, before
+registering the callback.
+
+**The query span is a real object with a no-op twin, not an `if` at the call
+site:** `ragbridge.tracing.span(...)` always returns something with an
+`.update(...)` method - a real Langfuse span when configured, a `_NullSpan`
+that does nothing when not - so `POST /query` never branches on whether
+tracing is enabled; it just calls `.update(...)` unconditionally inside the
+`with` block. This mirrors `NoOpReranker` (Phase 2): the "off" behaviour is
+a real implementation of the same interface, not a special case guarding
+every call site.
+
+Proposed commit breakdown:
+
+1. **`docs: add Phase 3 step 5 plan`** (this section).
+2. **`build: add langfuse dependency`**
+   - `langfuse` added as a runtime dependency (litellm's `"langfuse_otel"`
+     callback imports it lazily; without it installed, enabling tracing
+     would fail at the first LLM call rather than at startup).
+3. **`feat(tracing): add Langfuse configuration and the query span helper`**
+   - New `src/ragbridge/tracing.py`: `configure(settings)` (registers
+     LiteLLM's callback, bridging settings into `os.environ` first - both as
+     described above; a no-op when either key is unset) and `span(settings,
+     name, **input_fields)` (a context manager yielding a real span or a
+     `_NullSpan`, as described above).
+   - `LANGFUSE_PUBLIC_KEY` (default `""`), `LANGFUSE_SECRET_KEY` (default
+     `""`), `LANGFUSE_HOST` (default `"https://cloud.langfuse.com"`)
+     settings, documented in `.env.example`.
+   - `create_app()` calls `tracing.configure(settings)` once, at app
+     creation - inert with the default empty keys, so every existing test
+     and the key-free `docker compose up` path are unaffected.
+   - Tests: `configure()` with unset keys never touches
+     `litellm.success_callback` (still `[]` afterwards) and `span()` yields
+     a `_NullSpan` whose `.update()` is a harmless no-op; `configure()` with
+     both keys set registers exactly `["langfuse_otel"]` and bridges all
+     three values into `os.environ` (restored afterwards, so the test
+     cannot leak global state into any other test) - covers the *wiring*
+     without needing a real Langfuse project, matching decision 5's "CI
+     never calls a real provider," extended here to "or a real observability
+     backend."
+4. **`feat(api): wrap POST /query in a tracing span`**
+   - `answer_query` opens `tracing.span(settings, "query",
+     question=request.question, mode=..., top_k=...)` around embedding,
+     retrieval, reranking, and generation, and calls `span.update(output=...)`
+     with the response before returning - so LiteLLM's own per-call spans
+     (the embedding call, the chat completion) nest inside it instead of
+     each appearing as an unrelated top-level trace. A cache hit returns
+     before the span opens: nothing was computed, so there is nothing worth
+     tracing.
+   - Tests: the disabled path (default settings) behaves exactly as every
+     earlier phase's `POST /query` tests already assert - no new assertions
+     needed there, since `_NullSpan` changes nothing observable.
+5. **`docs: README, docs/adr/0005, and Phase 3 wrap-up for v0.2.0`**
+   - `docs/adr/0005-cost-tracking-and-tracing-with-langfuse.md`: why
+     LiteLLM's callback over wrapping every call site (decision 8), and the
+     full `"langfuse"` vs `"langfuse_otel"` account above, so a future
+     LiteLLM or Langfuse upgrade has a documented reason to re-verify rather
+     than assume either still behaves this way.
+   - README: Phase 3 features (API keys, multi-tenancy, background jobs,
+     caching, tracing), the new settings, and a short "how to enable
+     tracing" note. Bump `pyproject.toml` to `0.2.0`.
