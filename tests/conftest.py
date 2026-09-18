@@ -27,7 +27,9 @@ def _reset_database() -> None:
     async def truncate_all_tables() -> None:
         engine = create_engine(Settings())
         async with engine.begin() as connection:
-            await connection.execute(text("TRUNCATE TABLE chunks, documents"))
+            await connection.execute(
+                text("TRUNCATE TABLE chunks, documents, api_keys, tenants CASCADE")
+            )
         await engine.dispose()
 
     asyncio.run(truncate_all_tables())

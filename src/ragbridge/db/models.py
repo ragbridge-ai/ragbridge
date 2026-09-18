@@ -14,6 +14,40 @@ from ragbridge.config import get_settings
 from ragbridge.db.base import Base
 
 
+class Tenant(Base):
+    """A calling application. Documents and API keys belong to one tenant."""
+
+    __tablename__ = "tenants"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    name: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ApiKey(Base):
+    """A hashed API key that authenticates requests for one tenant.
+
+    ``key_hash`` is a SHA-256 digest, not a slow salted hash - see decision
+    2 in docs/plans/phase-3.md: the key itself is a 256-bit random secret,
+    so a fast hash costs an attacker nothing extra while keeping
+    authentication a single indexed lookup. ``prefix`` is stored so a key
+    can be identified in a list without ever storing or displaying the
+    rest of it. ``revoked_at`` marks a key as no longer valid without
+    deleting the row, so what a leaked key touched can still be audited.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    key_hash: Mapped[str] = mapped_column(unique=True)
+    prefix: Mapped[str]
+    name: Mapped[str]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+
 class Document(Base):
     """An uploaded document, before chunking and embedding.
 
