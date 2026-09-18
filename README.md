@@ -6,13 +6,12 @@ smart search over its own data, without moving the application to Python.
 
 ## Status
 
-**v0.2.0 — Production-ready.** Every endpoint except `/health` requires an API key;
-each key belongs to a tenant, and tenants never see each other's documents. Large
-uploads are processed by a background worker instead of blocking the request.
-Embeddings are cached by default, whole answers can optionally be cached too, and
-Langfuse tracing/cost tracking is available. See [AGENTS.md](AGENTS.md) for the full
-roadmap and [docs/plans/phase-3.md](docs/plans/phase-3.md) for the decisions behind
-this phase.
+**v0.3.0 — Agents and MCP.** On top of the production-ready service (API keys,
+multi-tenancy, background jobs, caching, Langfuse tracing), `POST /agent` can search
+more than once for questions whose answer lives in several places, and an MCP server
+lets a client such as Claude Desktop search your documents directly. See
+[AGENTS.md](AGENTS.md) for the full roadmap and [docs/plans/phase-4.md](docs/plans/phase-4.md)
+for the decisions behind this phase.
 
 ## Requirements
 
@@ -92,6 +91,45 @@ see [ADR 0003](docs/adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pas
 instead of `RETRIEVAL_MODE`'s default. Only documents belonging to the calling
 tenant's key are ever searched.
 
+### Search without generating an answer
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "refund policy", "top_k": 5}'
+```
+
+Returns `{"results": [...]}`: the same retrieval and reranking as `/query`, stopping
+before generation. Each result is a **whole chunk** (`content`, not a snippet) with its
+document, chunk position, and score - for callers that do their own reasoning over the
+text.
+
+### Ask a multi-step question
+
+```bash
+curl -X POST http://localhost:8000/agent \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How does our refund policy differ from our cancellation policy?"}'
+```
+
+Returns `{"answer": "...", "sources": [...], "steps": [...], "step_count": N}`. The agent
+searches for the question, then a planner model decides whether another search with a
+different query would help, up to `AGENT_MAX_STEPS` searches. `steps` lists each query
+and how many chunks it found, so a wrong answer can be traced to what was searched.
+Chunks found by several searches appear once. A request may pass `"max_steps"` to use
+fewer searches, never more than the server allows.
+
+The planner must reply with a small JSON object. **If it cannot** - a reply that is not
+valid JSON, names an unknown action, or asks to search for nothing - the agent answers
+with what it has found so far, so `/agent` degrades to `/query` behaviour instead of
+failing ([ADR 0006](docs/adr/0006-hand-rolled-agent-loop-instead-of-langgraph.md)). In a
+small check with the default `llama3.2`, all 12 planner replies parsed, but its
+decisions varied between runs and answer quality with `/agent` has not been evaluated.
+A stronger planner model can be set with `AGENT_PLANNER_MODEL`.
+Each call is independent; there are no sessions or follow-up questions.
+
 ### List, fetch, and delete documents
 
 ```bash
@@ -116,6 +154,40 @@ uv run ragbridge-admin revoke-key --prefix rb_abcdefgh  # prefix from list outpu
 A key is printed once, at creation time, and stored only as a SHA-256 hash - there
 is no way to recover a lost key, only to revoke it and create a new one.
 
+## MCP
+
+ragbridge is also an [MCP](https://modelcontextprotocol.io) server, so a client such as
+Claude Desktop can search a tenant's documents. It exposes three tools -
+`search_documents` (whole chunks, for the client's own model to reason over), `ask` (a
+finished answer with sources), and `list_documents` - and deliberately not the agent: an
+MCP client is already an agent and can call `search_documents` repeatedly itself.
+
+**Over HTTP**, the server is mounted at `/mcp` (streamable HTTP) and takes the same
+`Authorization: Bearer <key>` as every other endpoint. A request with no bearer token
+gets `401`.
+
+**Over stdio**, for desktop clients, run `ragbridge-mcp`. It is a thin proxy to a
+*running* ragbridge, so it needs no database or Redis of its own:
+
+```bash
+RAGBRIDGE_API_KEY=<key> RAGBRIDGE_BASE_URL=http://localhost:8000 uv run ragbridge-mcp
+```
+
+`RAGBRIDGE_API_KEY` is required; `RAGBRIDGE_BASE_URL` defaults to
+`http://localhost:8000`. In Claude Desktop's config:
+
+```json
+{"mcpServers": {"ragbridge": {
+  "command": "uv",
+  "args": ["--directory", "/path/to/ragbridge", "run", "ragbridge-mcp"],
+  "env": {"RAGBRIDGE_API_KEY": "<key>"}
+}}}
+```
+
+Both transports send every tool call through the REST API with the caller's own key, so
+tenant isolation applies exactly as it does everywhere else - see
+[ADR 0007](docs/adr/0007-mcp-server-on-the-mcp-sdk-2x.md).
+
 ## Configuration
 
 All configuration is environment variables - see [.env.example](.env.example) for
@@ -139,6 +211,8 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `ANSWER_CACHE_TTL` | `3600` | Seconds a cached answer lives, when enabled |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | *(unset)* | Set both to enable Langfuse tracing and cost tracking |
 | `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Point at a self-hosted Langfuse instance instead |
+| `AGENT_MAX_STEPS` | `3` | Hard ceiling on searches per `POST /agent` call |
+| `AGENT_PLANNER_MODEL` | *(empty)* | LiteLLM model that decides what to search next; empty reuses `CHAT_MODEL` |
 
 To use a hosted provider instead of Ollama, change `EMBEDDING_MODEL` / `CHAT_MODEL`
 to any [LiteLLM model name](https://docs.litellm.ai/docs/providers) (for example
