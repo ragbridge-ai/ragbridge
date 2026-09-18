@@ -235,6 +235,7 @@ def main() -> None:
         default="llama3.2",
         help="Chat model used as the RAGAS judge, via Ollama's OpenAI-compatible API by default.",
     )
+    parser.add_argument("--api-key", required=True, help="API key created with ragbridge-admin.")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -244,7 +245,8 @@ def main() -> None:
         model=settings.embedding_model, api_base=settings.ollama_base_url
     )
 
-    with httpx.Client(base_url=args.base_url, timeout=120.0) as client:
+    headers = {"Authorization": f"Bearer {args.api_key}"}
+    with httpx.Client(base_url=args.base_url, headers=headers, timeout=120.0) as client:
         upload_corpus(client)
         records = build_records(client, load_dataset(), top_k=args.top_k)
 

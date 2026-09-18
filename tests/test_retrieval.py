@@ -31,7 +31,7 @@ def _make_document() -> Document:
 
 
 def test_keyword_search_finds_a_literal_token_that_vector_search_misses(
-    app_with_database: FastAPI,
+    app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
     """The gap the second retrieval arm exists to close.
 
@@ -42,7 +42,7 @@ def test_keyword_search_finds_a_literal_token_that_vector_search_misses(
     exactly and that a semantics-free embedder has no way to connect to
     the question.
     """
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     error_chunk = "Error code ERR_4021 means the upload exceeded the size limit."
     other_chunk = "Cats are independent and curious animals."
     client.post("/documents", files={"file": ("errors.txt", error_chunk.encode(), "text/plain")})
@@ -67,14 +67,14 @@ def test_keyword_search_finds_a_literal_token_that_vector_search_misses(
 
 
 def test_keyword_search_excludes_chunks_with_no_matching_terms(
-    app_with_database: FastAPI,
+    app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
     """``websearch_to_tsquery`` filters with ``@@``, it does not just rank.
 
     A chunk sharing no terms with the query must not appear at all, unlike
     vector search where every row gets some (possibly meaningless) score.
     """
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     client.post(
         "/documents",
         files={"file": ("a.txt", b"Cats are independent and curious animals.", "text/plain")},

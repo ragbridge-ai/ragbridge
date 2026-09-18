@@ -5,9 +5,12 @@ import asyncio
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ragbridge.auth import api_key_prefix, generate_api_key, hash_api_key
 from ragbridge.chat import FakeChatter, get_chatter
 from ragbridge.config import Settings
+from ragbridge.db.models import ApiKey, Tenant
 from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.embeddings import FakeEmbedder, get_embedder
 from ragbridge.main import create_app
@@ -50,6 +53,36 @@ def app_with_database() -> FastAPI:
     app.dependency_overrides[get_embedder] = lambda: FakeEmbedder(settings.embedding_dimension)
     app.dependency_overrides[get_chatter] = lambda: FakeChatter()
     return app
+
+
+@pytest.fixture
+def tenant_with_key(app_with_database: FastAPI) -> str:
+    """Create a tenant with one active API key, returning the raw key.
+
+    Most tests only care that a valid key exists, not which tenant it
+    belongs to - the tenant and its api_keys row are plumbing that
+    get_tenant needs, not something these tests inspect.
+    """
+
+    async def create() -> str:
+        key = generate_api_key()
+        session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+        async with session_factory() as session:
+            tenant = Tenant(name="test-tenant")
+            session.add(tenant)
+            await session.flush()
+            session.add(
+                ApiKey(
+                    tenant_id=tenant.id,
+                    key_hash=hash_api_key(key),
+                    prefix=api_key_prefix(key),
+                    name="test-key",
+                )
+            )
+            await session.commit()
+        return key
+
+    return asyncio.run(create())
 
 
 @pytest.fixture

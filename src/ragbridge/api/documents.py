@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ragbridge.auth import get_tenant
 from ragbridge.chunking import chunk_text
 from ragbridge.config import Settings, get_settings
 from ragbridge.db.models import Chunk, Document
@@ -18,7 +19,7 @@ from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.pdf import extract_pdf_pages
 
-router = APIRouter(prefix="/documents", tags=["documents"])
+router = APIRouter(prefix="/documents", tags=["documents"], dependencies=[Depends(get_tenant)])
 
 ALLOWED_CONTENT_TYPES = {"text/plain", "text/markdown", "application/pdf"}
 

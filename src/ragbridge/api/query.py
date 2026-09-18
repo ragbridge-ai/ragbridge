@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ragbridge.auth import get_tenant
 from ragbridge.chat import Chatter, get_chatter
 from ragbridge.config import Settings, get_settings
 from ragbridge.db.session import get_session
@@ -14,7 +15,7 @@ from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.rerank import Reranker, get_reranker
 from ragbridge.retrieval import hybrid_search
 
-router = APIRouter(tags=["query"])
+router = APIRouter(tags=["query"], dependencies=[Depends(get_tenant)])
 
 SNIPPET_LENGTH = 300
 
