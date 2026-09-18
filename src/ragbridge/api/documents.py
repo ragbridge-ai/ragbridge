@@ -4,7 +4,7 @@ import hashlib
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict
@@ -17,6 +17,7 @@ from ragbridge.db.models import Document, Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.ingestion import ingest_document, parse_pages
+from ragbridge.jobs import JobQueue, get_job_queue
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -31,6 +32,8 @@ class DocumentOut(BaseModel):
     id: uuid.UUID
     filename: str
     content_type: str
+    status: Literal["pending", "processing", "ready", "failed"]
+    error: str | None
     created_at: datetime
 
 
@@ -42,13 +45,22 @@ async def upload_document(
     tenant: Annotated[Tenant, Depends(get_tenant)],
     settings: Annotated[Settings, Depends(get_settings)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
+    job_queue: Annotated[JobQueue, Depends(get_job_queue)],
 ) -> Document:
     """Upload a text, Markdown, or PDF document.
 
-    The content is parsed, split into chunks, and embedded before it is
-    stored. Uploading the same content twice is not an error: the second
-    upload returns the existing document instead of redoing that work -
-    but only within the same tenant. sha256 is unique per tenant, not
+    Uploads over ``settings.async_processing_threshold`` are stored with
+    ``status = "pending"`` and handed to the background worker instead
+    of being parsed within the request - the response comes back `202`
+    immediately, and a client polls ``GET /documents/{id}`` until
+    ``status`` is no longer ``"pending"``/``"processing"`` (decision 6,
+    docs/plans/phase-3.md). Smaller uploads are parsed, chunked, and
+    embedded before the response, exactly as before, and come back `201`
+    with ``status = "ready"``.
+
+    Uploading the same content twice is not an error: the second upload
+    returns the existing document instead of redoing that work - but
+    only within the same tenant. sha256 is unique per tenant, not
     globally, so two tenants uploading the same file each get their own
     document (decision 3, docs/plans/phase-3.md).
     """
@@ -75,6 +87,21 @@ async def upload_document(
     if existing is not None:
         response.status_code = status.HTTP_200_OK
         return existing
+
+    if len(raw) > settings.async_processing_threshold:
+        document = Document(
+            tenant_id=tenant.id,
+            filename=filename,
+            content_type=content_type,
+            sha256=sha256,
+            raw_content=raw,
+            status="pending",
+        )
+        session.add(document)
+        await session.commit()
+        await job_queue.enqueue_process_document(document.id)
+        response.status_code = status.HTTP_202_ACCEPTED
+        return document
 
     try:
         pages = parse_pages(raw, content_type)
@@ -115,6 +142,21 @@ async def list_documents(
         select(Document).where(Document.tenant_id == tenant.id).order_by(Document.created_at.desc())
     )
     return result.all()
+
+
+@router.get("/{document_id}", response_model=DocumentOut)
+async def get_document(
+    document_id: uuid.UUID,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
+) -> Document:
+    """Fetch one document by id - for a client to poll an async upload's status."""
+    document = await session.scalar(
+        select(Document).where(Document.id == document_id, Document.tenant_id == tenant.id)
+    )
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+    return document
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -13,6 +13,7 @@ from ragbridge.config import Settings
 from ragbridge.db.models import ApiKey, Tenant
 from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.embeddings import FakeEmbedder, get_embedder
+from ragbridge.jobs import FakeJobQueue, get_job_queue
 from ragbridge.main import create_app
 
 
@@ -49,9 +50,14 @@ def app_with_database() -> FastAPI:
     app = create_app()
     settings = Settings()
     engine = create_engine(settings)
-    app.state.session_factory = create_session_factory(engine)
-    app.dependency_overrides[get_embedder] = lambda: FakeEmbedder(settings.embedding_dimension)
+    session_factory = create_session_factory(engine)
+    app.state.session_factory = session_factory
+    embedder = FakeEmbedder(settings.embedding_dimension)
+    app.dependency_overrides[get_embedder] = lambda: embedder
     app.dependency_overrides[get_chatter] = lambda: FakeChatter()
+    app.dependency_overrides[get_job_queue] = lambda: FakeJobQueue(
+        {"session_factory": session_factory, "embedder": embedder, "settings": settings}
+    )
     return app
 
 
