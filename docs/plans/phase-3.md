@@ -228,3 +228,83 @@ separate, separately testable commits. Proposed commit breakdown:
      authenticates a request; `revoke-key` makes that same key stop working.
      The second test is the one that proves revocation is real rather than
      cosmetic.
+
+## Step 2 detail — multi-tenant scoping of documents, retrieval, and evaluation
+
+Branch: `feat/phase-3-tenancy` (created from `main`, off the merged step 1).
+Step 1 authenticates a request and resolves it to a tenant, but nothing yet
+reads that tenant: every key still sees every document and every chunk. This
+step closes that gap.
+
+**Refined while implementing decision 3:** the plan as written said a filter
+the index scan itself can see - denormalising `tenant_id` onto `chunks` -
+avoids the HNSW under-return problem. That is necessary but, on its own, not
+quite sufficient: the database actually installed is pgvector **0.8.6**
+(verified against the running container, not assumed), which supports
+**iterative index scans** (added in pgvector 0.8.0) - a scan mode built for
+exactly this failure. Without it, a `WHERE tenant_id = ...` filter next to an
+`ORDER BY embedding <=> ...` still lets PostgreSQL's planner walk the HNSW
+graph for its ordinary quota of neighbours *before* checking the filter, on a
+column HNSW has no index-native way to prune by ahead of time. `SET LOCAL
+hnsw.iterative_scan = 'relaxed_order'` makes the scan keep walking until it
+has actually found `limit` matching rows (bounded by `hnsw.max_scan_tuples`,
+default 20000), instead of stopping early and only then discarding the rows
+that fail the filter. `vector_search` sets this per-query, inside the same
+session/transaction as the query it precedes, so it never leaks into other
+queries on the same connection. `relaxed_order` (not `strict_order`) accepts
+slightly out-of-distance-order matches in exchange for not restarting the
+walk from scratch at every step - an acceptable trade here, since
+`reciprocal_rank_fusion` and the reranker both re-sort this candidate set
+anyway. `keyword_search`'s GIN index is an exact match, not an approximation,
+so it needs the tenant filter and nothing more.
+
+Proposed commit breakdown:
+
+1. **`docs: add Phase 3 step 2 plan`** (this section).
+2. **`feat(db): add tenant_id to documents and chunks`**
+   - `tenant_id` (FK to `tenants.id`, `ON DELETE CASCADE`, indexed) added to
+     both tables; migration `3cb3c5c7dcce`. Both tables were empty in every
+     environment this ran against, so the column is added `NOT NULL` directly,
+     no backfill step.
+   - `documents.sha256`'s unique constraint moves from `sha256` alone to
+     `(tenant_id, sha256)` - two tenants uploading the same file must get two
+     independent documents (decision 3's "sha256 unique per tenant" is only
+     meaningful once this constraint matches it).
+   - Tests: the existing `Document`/`Chunk` round-trip tests in
+     `test_models.py` now create a `Tenant` first and pass its id.
+3. **`feat(retrieval): scope vector and keyword search by tenant`**
+   - `vector_search` and `keyword_search` both gain a required `tenant_id`
+     keyword argument and filter on it; `hybrid_search` threads it through to
+     both arms. `vector_search` additionally sets `hnsw.iterative_scan` (see
+     above).
+   - Tests: `test_retrieval.py`'s direct calls to both functions now resolve a
+     `tenant_id` from the test's API key (via a small helper - these tests
+     call the functions directly, not through the API, so they need an actual
+     id, not a header) and pass it through.
+4. **`feat(api): scope documents and query by tenant`**
+   - `POST /documents`, `GET /documents`, `DELETE /documents/{id}`, and
+     `POST /query` each take `Annotated[Tenant, Depends(get_tenant)]`
+     directly, replacing step 1's router-level `dependencies=[Depends(get_tenant)]`
+     (every endpoint now actually uses the resolved tenant to scope a query,
+     so declaring it once per endpoint - not once per router as a
+     side-effect-only check - is both authentication and the value the
+     endpoint needs, in one dependency).
+   - `POST /documents`: new documents and chunks are stamped with
+     `tenant.id`; the duplicate-upload check filters by tenant too.
+   - `GET /documents`: filters by `tenant.id`.
+   - `DELETE /documents/{id}`: looks the document up **by id and tenant
+     together**; a document belonging to another tenant is indistinguishable
+     from a missing one and returns `404`, never `403` (API changes,
+     above) - a `403` would confirm the id exists, which is itself
+     information a caller should not get for data it cannot see.
+   - `POST /query`: `hybrid_search` is called with the caller's `tenant.id`.
+5. **`test(auth): add a tenant isolation test`**
+   - The mitigation decision 3 calls for in place of Row-Level Security: one
+     test file that creates two tenants, uploads a distinct document to each,
+     and walks every endpoint as tenant B asserting tenant A's data is
+     invisible - `GET /documents` never lists it, `DELETE` on tenant A's
+     document id returns `404` under tenant B's key, and `POST /query` with a
+     question that only matches tenant A's content returns no sources under
+     tenant B's key. This is the safety net for choosing application-level
+     filtering over RLS: a forgotten `WHERE` clause fails this test loudly,
+     the same day it is introduced, rather than leaking silently.
