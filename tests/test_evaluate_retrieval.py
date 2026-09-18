@@ -6,9 +6,11 @@ semantics, so recall@k and MRR here are meaningless numbers, not a
 regression signal (decision 5, docs/plans/phase-2.md); only their shape
 (a fraction between 0 and 1, over every question) is asserted.
 
-TestClient subclasses httpx.Client, so it satisfies evaluate_retrieval's
-and upload_corpus's type exactly as a real client pointed at a running
-server would - no separate mock layer needed.
+TestClient satisfies evaluate_retrieval's and upload_corpus's HttpClient
+Protocol exactly as a real client pointed at a running server would - no
+separate mock layer needed (see evaluate_retrieval.HttpClient's docstring
+for why this is a structural Protocol, not a check against httpx.Client
+by name).
 """
 
 from fastapi import FastAPI

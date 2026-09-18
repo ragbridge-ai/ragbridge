@@ -6,8 +6,8 @@ enough to run on every retrieval change. Everything here goes through the
 real POST /documents and POST /query endpoints (docs/plans/phase-2.md,
 step 4) - which is what lets the exact same functions serve a real
 evaluation (against a live server) and the CI smoke test (against
-TestClient with fakes, see tests/test_evaluate_retrieval.py): both are
-httpx.Client-shaped.
+TestClient with fakes, see tests/test_evaluate_retrieval.py): both
+satisfy this module's HttpClient Protocol.
 
 Run for real, against a running server with a real embedder configured:
 
@@ -20,11 +20,46 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Protocol
 
 import httpx
 
 CORPUS_DIR = Path(__file__).parent / "corpus"
 DATASET_PATH = Path(__file__).parent / "dataset.jsonl"
+
+
+class HttpResponse(Protocol):
+    """The parts of an HTTP response these evaluation scripts use."""
+
+    def raise_for_status(self) -> object: ...
+    def json(self) -> Any: ...
+
+
+class HttpClient(Protocol):
+    """The one method these evaluation scripts need from an HTTP client.
+
+    Deliberately structural, not httpx.Client by name - the same "depend
+    on the shape, not a concrete class" idiom as ragbridge.embeddings.
+    Embedder. A real httpx.Client (pointed at a running server) and
+    starlette's TestClient (the CI smoke test) both satisfy this, but
+    TestClient's *nominal* base class is not guaranteed to stay
+    httpx.Client: installing ragas (Phase 2 step 5) transitively pulls in
+    httpx2 (via langchain-core -> langsmith), and once httpx2 is
+    importable, TestClient switches to subclassing httpx2.Client instead.
+    Discovered while building step 5, not assumed - see
+    docs/plans/phase-2.md.
+
+    Lists json and files by name, typed loosely, rather than **kwargs:
+    Any - mypy's structural matching for a Protocol method with **kwargs
+    requires the implementation to also declare **kwargs, so it rejects
+    httpx.Client.post's real signature (many specific named parameters)
+    even though that signature accepts a superset of what this Protocol
+    needs. Naming exactly the two keyword arguments these scripts pass
+    sidesteps that mismatch (verified: this is what actually made mypy
+    accept a real httpx.Client and TestClient here).
+    """
+
+    def post(self, url: str, *, json: Any = None, files: Any = None) -> HttpResponse: ...
 
 
 @dataclass(frozen=True)
@@ -36,6 +71,13 @@ class Question:
 
     Finding it inside a response's sources[].snippet is how this script
     tells "the right chunk came back" (docs/plans/phase-2.md, step 4).
+    """
+    reference_answer: str
+    """A short, ground-truth answer to the question, grounded in the same
+    paragraph as source_snippet. Unused by this script - it exists for
+    evaluate_answers.py's RAGAS metrics (step 5), which need a reference
+    answer to compare a generated answer and its retrieved context
+    against.
     """
 
 
@@ -61,12 +103,13 @@ def load_dataset(path: Path = DATASET_PATH) -> list[Question]:
                 question=row["question"],
                 source_document=row["source_document"],
                 source_snippet=row["source_snippet"],
+                reference_answer=row["reference_answer"],
             )
         )
     return questions
 
 
-def upload_corpus(client: httpx.Client, corpus_dir: Path = CORPUS_DIR) -> None:
+def upload_corpus(client: HttpClient, corpus_dir: Path = CORPUS_DIR) -> None:
     """Upload every corpus document through POST /documents."""
     for path in sorted(corpus_dir.glob("*.md")):
         response = client.post(
@@ -76,7 +119,7 @@ def upload_corpus(client: httpx.Client, corpus_dir: Path = CORPUS_DIR) -> None:
 
 
 def evaluate_retrieval(
-    client: httpx.Client, questions: list[Question], *, top_k: int = 5
+    client: HttpClient, questions: list[Question], *, top_k: int = 5
 ) -> EvaluationResult:
     """Run every question through POST /query and score retrieval.
 
