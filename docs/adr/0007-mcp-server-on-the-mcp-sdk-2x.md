@@ -32,8 +32,9 @@ This is the fourth version-specific incompatibility this project has hit.
   manager must be started from the host app's lifespan, and the SDK allows
   `session_manager.run()` **once per instance** - so the server is built per app in
   `create_app()`, and a test that runs the lifespan must run it once per test.
-- The SDK's DNS-rebinding guard defaults to allowing only localhost `Host` headers,
-  which would reject every real deployment.
+- The SDK's DNS-rebinding guard defaults to allowing only localhost `Host` headers:
+  with the defaults, a request with `Host: rag.example.com` gets
+  `421 Invalid Host header`, which would reject every real deployment (verified).
 - The SDK's built-in auth is OAuth-shaped (issuer URLs, scopes, token verification).
 
 ### How should a tool call reach the data?
@@ -66,9 +67,9 @@ not apply.
 4. **The `/mcp` transport is stateless** (`stateless_http=True`, `json_response=True`),
    so every request stands alone and its own `Authorization` header is read on each
    call. It is registered as a Starlette `Route`, not a `Mount`: a `Mount` at `/mcp`
-   answers `POST /mcp` with a `307` redirect to `/mcp/`, which some clients do not
-   follow. A small ASGI wrapper returns `401` at connect time when no bearer token is
-   present.
+   answers `POST /mcp` with a `307` redirect to `/mcp/` (verified), an extra round trip
+   every client would have to follow for the URL it was told to use. A small ASGI
+   wrapper returns `401` at connect time when no bearer token is present.
 5. **The SDK's OAuth machinery is not used.** A single API key does not need an
    issuer and scopes.
 6. **The DNS-rebinding guard is disabled for `/mcp`.** It protects servers that trust
