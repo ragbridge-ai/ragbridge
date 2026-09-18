@@ -69,6 +69,24 @@ class Settings(BaseSettings):
     worker instead of within the request (see ragbridge.jobs, ragbridge.worker).
     """
 
+    embedding_cache_ttl: int = 86_400
+    """Seconds a cached embedding lives. 0 disables the embedding cache.
+
+    Safe to enable by default: an embedding is a pure function of
+    (model, text), so a cached hit can never be stale (decision 7,
+    docs/plans/phase-3.md).
+    """
+    answer_cache_enabled: bool = False
+    """Whether POST /query caches whole answers, keyed by a per-tenant
+    corpus version that any document upload or delete bumps.
+
+    Off by default, unlike the embedding cache: a cached answer can go
+    stale the moment a document is uploaded or deleted, so caching it
+    is a deliberate tradeoff the operator opts into, not a free win.
+    """
+    answer_cache_ttl: int = 3_600
+    """Seconds a cached answer lives, used only when answer_cache_enabled."""
+
 
 @lru_cache
 def get_settings() -> Settings:
