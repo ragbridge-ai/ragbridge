@@ -137,3 +137,58 @@ commit breakdown:
      `keyword_search` and is *not* ranked first by `vector_search`, because
      `FakeEmbedder` has no semantics. That asymmetry is exactly the gap the
      second arm exists to close, so it is worth a test rather than a comment.
+
+## Step 2 detail — hybrid retrieval and POST /query
+
+Branch: `feat/phase-2-hybrid` (created from `main`, off the merged step 1).
+Step 1 (full-text search arm) is merged: `vector_search` and `keyword_search`
+exist as two independent functions with the same `(chunk, document, score)`
+shape, but nothing combines them yet, and `POST /query` still only calls
+`vector_search`. Proposed commit breakdown:
+
+1. **`docs: add Phase 2 step 2 plan`** (this section).
+2. **`feat(retrieval): add reciprocal rank fusion`**
+   - `reciprocal_rank_fusion(rankings, *, k=60) -> list[SearchResult]` in
+     `retrieval.py`, a **pure function** - no session, no `await`, unit tested
+     the same way `chunk_text` was (Phase 1 step 3). Each input ranking is one
+     arm's results, best first; an item is identified by `chunk.id`, and its
+     fused score is `sum(1 / (k + rank) for each ranking it appears in)`,
+     `rank` 1-based. This uses only *position* in each ranking, never the
+     arm's own score (decision 1: a cosine similarity and a `ts_rank` are not
+     on comparable scales, so blending them directly would need a tuned,
+     corpus-specific weight; rank position needs none).
+   - Tests: a chunk ranked consistently in the middle by both arms outranks
+     one arm's top pick that the other arm ranks far down (the concrete
+     numbers from decision 1: rank 1 + rank 8 scores `1/61 + 1/68 ≈ 0.0311`,
+     rank 3 + rank 3 scores `1/63 + 1/63 ≈ 0.0317` and wins); an item found by
+     only one arm is still scored and included, from that one ranking alone;
+     empty rankings return an empty list.
+3. **`feat(config): add retrieval settings`**
+   - `RETRIEVAL_MODE: Literal["hybrid", "vector", "keyword"] = "hybrid"` and
+     `RETRIEVAL_CANDIDATES: int = 20` (how many rows each arm contributes
+     before fusion - decision-adjacent: kept larger than `top_k` so a later
+     reranker, step 3, has more than `top_k` candidates to actually rerank).
+   - `.env.example` updated to document both, next to the existing chunking
+     settings.
+4. **`feat(api): wire hybrid retrieval into POST /query`**
+   - `hybrid_search(session, embedding, query, *, mode, candidates, top_k)`
+     in `retrieval.py`: runs `vector_search` and `keyword_search` concurrently
+     with `asyncio.gather` when `mode == "hybrid"` (they hit independent
+     tables and don't need to run in sequence), fuses with
+     `reciprocal_rank_fusion`, and returns the first `top_k` rows; `mode ==
+     "vector"` or `"keyword"` runs only that one arm, unfused, so the setting
+     can disable hybrid entirely without a second code path in the endpoint.
+   - `QueryRequest` gains an optional `mode` field, defaulting to
+     `settings.retrieval_mode` when absent (decision: this lets step 4's
+     evaluation script compare modes against the same running server without
+     restarting it with different settings).
+   - **`Source.score` now means the fused score**, not `1 - cosine_distance`
+     (flagged in advance in the Phase 2 "API changes" section above). Existing
+     `test_query.py` assertions that hard-code `score == 1.0` for an exact
+     match are updated: RRF's top score for an item found by every arm is
+     `sum(1 / (k + 1))` over the arms that ran, not `1.0`.
+   - Tests: a question matching one chunk's exact text and a second chunk's
+     rare token both come back, in `hybrid` mode, ahead of where either arm
+     alone would rank them; `mode="vector"` reproduces the pre-hybrid ranking;
+     an unsupported `mode` value is rejected by Pydantic with `422`, not a
+     runtime error.
