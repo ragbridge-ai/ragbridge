@@ -5,8 +5,9 @@ provider seams, so the loop and tests depend on the shape of a planner, not
 on LiteLLM. Tests use ``FakePlanner`` and never call a real provider.
 
 A decision that cannot be understood means "answer now", never an error
-(decision 3, docs/plans/phase-4.md): the default chat model is known to
-fail structured output, so a bad reply is an expected event.
+(decision 3, docs/plans/phase-4.md): a small model's structured output
+cannot be trusted to parse, so a bad reply must degrade to single-shot
+retrieval instead of failing the request.
 """
 
 import json
