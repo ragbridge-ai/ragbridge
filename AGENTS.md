@@ -66,6 +66,7 @@ See the detailed plan: [docs/plans/phase-2.md](docs/plans/phase-2.md).
 API key authentication, multi-tenancy, background jobs for large files (Redis + worker),
 caching, tracing and cost tracking with Langfuse.
 Output: `v0.2.0`.
+See the detailed plan: [docs/plans/phase-3.md](docs/plans/phase-3.md).
 
 ### Phase 4 — Agents and MCP (Weeks 9–10)
 Multi-step agent mode with LangGraph, MCP server.
