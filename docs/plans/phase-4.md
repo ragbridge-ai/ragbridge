@@ -84,10 +84,18 @@ MCP server so a client like Claude Desktop can search a tenant's documents direc
    register the same tools from one module, because tool descriptions that drift
    between transports are a bug users would experience as "it works in one client
    and not the other".
+   **Both transports reach the data the same way: through ragbridge's REST API.**
+   A tool call becomes an ordinary HTTP request carrying the caller's own bearer
+   key - in-process over ASGI for `/mcp`, over the network for the stdio proxy -
+   using one shared `RagbridgeClient`. API-key auth and tenant scoping are then
+   enforced by the REST layer in exactly one place, and the MCP layer never holds a
+   database session or a tenant. The `mcp` SDK's own auth (OAuth: issuer URLs,
+   scopes) was considered and rejected as far heavier than a single API key needs.
 9. **MCP exposes `search_documents`, `ask`, and `list_documents` - not the agent.**
-   `search_documents` is the most MCP-native of the three: it hands back chunks and
-   lets the *client's* model do the reasoning with its own fresh context, which is
-   the entire point of the protocol. `ask` returns a finished server-side answer for
+   `search_documents` is the most MCP-native of the three: it hands back whole
+   chunks and lets the *client's* model do the reasoning with its own fresh context,
+   which is the entire point of the protocol. (`POST /query` only returns 300-character
+   snippets, so this needs the new `POST /search`, below.) `ask` returns a finished server-side answer for
    clients that want one. `list_documents` lets a client see what is actually
    searchable before it starts guessing. `agent_query` is deliberately **excluded**:
    an MCP client is already an agent, and it can call `search_documents` several
@@ -100,6 +108,11 @@ MCP server so a client like Claude Desktop can search a tenant's documents direc
     with a message that explicitly suggests pinning `mcp<2`. This is the fourth
     version-specific incompatibility this project has hit after `ragas`,
     `langfuse`, and `litellm`; it gets an ADR for the same reason those did.
+    Further 2.x facts verified while building step 3: the SDK's own HTTP client is
+    built on `httpx2`, not `httpx`; a tool must raise `ToolError` for an anticipated
+    failure, because any other exception reaches the model only as a generic
+    "Error executing tool"; and a mounted app gets no lifespan, so the session
+    manager is started from the FastAPI lifespan.
 
 ## Data model changes
 
@@ -111,6 +124,11 @@ same tenant-scoped queries `POST /query` and `GET /documents` already use.
 - **New `POST /agent`**: `{question, max_steps?}` →
   `{answer, sources[], steps[], step_count}`. Each entry in `steps` is
   `{query, results}` - what it searched for and how many chunks came back.
+- **New `POST /search`**: `{query, top_k?, mode?}` → `{results[]}`, each result a
+  whole chunk (`document_id`, `filename`, `chunk_index`, `content`, `score`). The
+  same retrieval and reranking as `POST /query`, stopping before generation. Added
+  for `search_documents` (decision 9); useful to any caller that reasons over chunks
+  itself.
 - **New MCP transport mounted at `/mcp`** (streamable HTTP, not a REST endpoint),
   authenticated with the same `Authorization: Bearer <key>` as everything else.
 - No changes to `POST /query`, `POST /documents`, or any existing endpoint.
