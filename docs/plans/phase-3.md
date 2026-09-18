@@ -261,7 +261,17 @@ so it needs the tenant filter and nothing more.
 Proposed commit breakdown:
 
 1. **`docs: add Phase 3 step 2 plan`** (this section).
-2. **`feat(db): add tenant_id to documents and chunks`**
+2. **`feat(db): add tenant_id to documents and chunks`**, **`feat(retrieval):
+   scope vector and keyword search by tenant`**, and **`feat(api): scope
+   documents and query by tenant`** - **corrected while implementing: these
+   three land as one commit, not three.** Once `tenant_id` is `NOT NULL`,
+   `POST /documents` violates that constraint on its very next write until it
+   is updated to set it - there is no order of separate commits across these
+   three that leaves every intermediate commit's test suite green, unlike step
+   1, where each table or function was inert until the next commit wired it
+   in. Splitting them here would only produce commits that fail in isolation,
+   which is worse than one honestly-sized commit. What follows describes the
+   combined commit's content, organised by concern:
    - `tenant_id` (FK to `tenants.id`, `ON DELETE CASCADE`, indexed) added to
      both tables; migration `3cb3c5c7dcce`. Both tables were empty in every
      environment this ran against, so the column is added `NOT NULL` directly,
@@ -272,7 +282,6 @@ Proposed commit breakdown:
      meaningful once this constraint matches it).
    - Tests: the existing `Document`/`Chunk` round-trip tests in
      `test_models.py` now create a `Tenant` first and pass its id.
-3. **`feat(retrieval): scope vector and keyword search by tenant`**
    - `vector_search` and `keyword_search` both gain a required `tenant_id`
      keyword argument and filter on it; `hybrid_search` threads it through to
      both arms. `vector_search` additionally sets `hnsw.iterative_scan` (see
@@ -281,7 +290,6 @@ Proposed commit breakdown:
      `tenant_id` from the test's API key (via a small helper - these tests
      call the functions directly, not through the API, so they need an actual
      id, not a header) and pass it through.
-4. **`feat(api): scope documents and query by tenant`**
    - `POST /documents`, `GET /documents`, `DELETE /documents/{id}`, and
      `POST /query` each take `Annotated[Tenant, Depends(get_tenant)]`
      directly, replacing step 1's router-level `dependencies=[Depends(get_tenant)]`
@@ -298,7 +306,7 @@ Proposed commit breakdown:
      above) - a `403` would confirm the id exists, which is itself
      information a caller should not get for data it cannot see.
    - `POST /query`: `hybrid_search` is called with the caller's `tenant.id`.
-5. **`test(auth): add a tenant isolation test`**
+3. **`test(auth): add a tenant isolation test`**
    - The mitigation decision 3 calls for in place of Row-Level Security: one
      test file that creates two tenants, uploads a distinct document to each,
      and walks every endpoint as tenant B asserting tenant A's data is
