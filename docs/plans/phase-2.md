@@ -444,15 +444,22 @@ Proposed commit breakdown:
      fields, correctly populated from the API response and the dataset.
 5. **`docs(evaluation): add evaluation.md, README scores, and ADRs`**
    - `docs/evaluation.md`: how to run both evaluation scripts, and a results
-     table stamped with the exact models and date used (decision 5) - **left
-     as a template with no scores filled in**, not fabricated numbers: a real
-     run needs the maintainer's own machine, and a score without a real run
-     behind it is worse than no score. Early exploratory runs against local
-     Ollama (`llama3.2`, done while verifying the API above) returned `0.0`
-     for `faithfulness` and `context_recall` on an easy, obviously-supported
-     example - a small 3B local model may not reliably produce the
-     structured reasoning RAGAS's metrics ask for, which is itself worth
-     recording as a real finding, not silently omitted.
+     table stamped with the exact models and date used (decision 5).
+     **Better than planned:** this section originally expected to ship as an
+     unfilled template, since a real run needs the maintainer's own machine -
+     but a local Ollama instance was actually available while building this
+     step, so both scripts were run for real against it instead, and the
+     table holds real numbers, not placeholders. `evaluate_retrieval.py`:
+     100% recall@5, 0.960 MRR (two of 25 questions ranked their correct chunk
+     2nd, not 1st). `evaluate_answers.py` (judge: `llama3.2`): the honest
+     headline finding is that `faithfulness` failed on **24 of 25 records** -
+     the reported `1.000` is an average over a single success, not a
+     trustworthy score - while `answer_relevancy` and `context_precision`
+     failed on 5 of 25 each and `context_recall` completed cleanly on all 25.
+     Recorded plainly, with sample sizes next to every number, rather than
+     presented at face value - see `docs/adr/0004-...` for the full account
+     of why a small local judge model struggles with RAGAS's structured
+     output contract.
    - README: short "Evaluation" section linking to `docs/evaluation.md`.
    - `docs/adr/0003-hybrid-search-with-reciprocal-rank-fusion.md`: why RRF
      over score-weighted blending (decision 1).
