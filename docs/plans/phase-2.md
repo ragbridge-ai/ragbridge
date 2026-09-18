@@ -264,3 +264,78 @@ returns `top_k` rows, ready to display. Proposed commit breakdown:
      (`RERANK_ENABLED=false`), every step 2 `POST /query` test keeps passing
      unmodified, because `NoOpReranker`'s truncation reproduces the old
      internal `[:top_k]` slice exactly.
+
+## Step 4 detail — evaluation corpus and retrieval metrics
+
+Branch: `feat/phase-2-eval-dataset` (created from `main`, off the merged step
+3). Step 3 (reranking) is merged: `POST /query` now runs the full pipeline
+(hybrid retrieval, optional reranking). This step measures it. No LLM judge
+is needed yet - recall@k and MRR only need an embedder, which is what makes
+them cheap enough to run on every retrieval change, unlike RAGAS (step 5).
+
+**Design decision made while planning this step:** the evaluation script
+drives everything through `POST /documents` and `POST /query` - the actual,
+public HTTP contract - rather than importing `retrieval.py` functions
+directly. A `Source` in the response already carries `snippet`, which is
+enough to tell whether the retrieved chunk is the one a question is asking
+about: a question's dataset entry gives a short, unique quote from its
+source chunk, and "was the right chunk retrieved" becomes "does that quote
+appear in one of the returned snippets." This means the exact same function
+serves two purposes with no separate mock layer: point it at a real running
+server (`httpx.Client(base_url=...)`) for a genuine evaluation, or at
+`TestClient(app_with_database)` with `FakeEmbedder`/`FakeChatter` overrides
+(decision 5) for the CI smoke test - `starlette.testclient.TestClient`
+subclasses `httpx.Client`, so both satisfy the same type.
+
+Proposed commit breakdown:
+
+1. **`docs: add Phase 2 step 4 plan`** (this section).
+2. **`feat(evaluation): add the corpus`**
+   - `evaluation/corpus/`: six short Markdown documents for a fictional
+     company, "Acme Cloud" - `hr-policy.md`, `refund-policy.md`,
+     `api-error-codes.md`, `onboarding-guide.md`, `security-policy.md`,
+     `billing-faq.md`. Each document is a `# Title` followed by several
+     one-paragraph topics (`**Label.** Sentence. Sentence.`), no blank line
+     inside a topic - so `chunk_text`'s paragraph split gives one chunk per
+     topic, not one chunk per heading plus one per paragraph.
+     `api-error-codes.md` is deliberately full of literal tokens (`ERR_1001`,
+     `ERR_4021`, ...) - the same kind of content the step 1 test proved
+     vector search struggles with, so the corpus can show the same gap at
+     evaluation scale, not just in one hand-picked unit test.
+   - No code in this commit - data only, matching decision 4 (a hand-written
+     corpus, so every question has exactly one correct source chunk).
+3. **`feat(evaluation): add the question dataset`**
+   - `evaluation/dataset.jsonl`, 25 questions (one per targeted paragraph,
+     spread across all six documents), each line
+     `{"question": ..., "source_document": ..., "source_snippet": ...}`.
+     `source_snippet` is a short, verbatim quote from the paragraph the
+     question is about - unique enough in the corpus that finding it in a
+     response's `sources[].snippet` reliably means "the right chunk came
+     back," with no chunk id or document id bookkeeping needed.
+4. **`feat(evaluation): add the retrieval evaluation script`**
+   - New `evaluation/evaluate_retrieval.py`: `load_dataset()`,
+     `upload_corpus(client)` (posts every corpus file to `/documents`), and
+     `evaluate_retrieval(client, questions, *, top_k=5) -> EvaluationResult`
+     (posts each question to `/query`, finds the first source, if any, whose
+     `snippet` contains that question's `source_snippet`, and computes
+     **recall@k** - the fraction of questions where the right chunk appears
+     anywhere in the top `k` - and **MRR**, mean reciprocal rank, which
+     additionally rewards the right chunk appearing *near the top*, not just
+     somewhere in the list).
+   - A `main()` builds a real `httpx.Client(base_url=...)` (default
+     `http://localhost:8000`, overridable with `--base-url`), runs the
+     evaluation against a running server, and prints recall@k and MRR - run
+     by hand, per decision 5, since it needs a real embedder.
+   - `evaluation` added to `pyproject.toml`'s `[tool.mypy] files`, so this
+     script is held to the same `mypy --strict` standard as `src` and
+     `tests` (AGENTS.md coding rules apply to every commit, not only
+     application code).
+   - New `tests/test_evaluate_retrieval.py`: the **CI smoke test** (decision
+     5). Builds `TestClient(app_with_database)` with `FakeEmbedder` and
+     `FakeChatter` overrides (the existing fixture), runs
+     `upload_corpus` then `evaluate_retrieval` against it, and asserts only
+     that it completes and returns a result of the right shape
+     (`questions_evaluated == 25`, both metrics between 0.0 and 1.0) - never
+     a specific score, because `FakeEmbedder` has no semantics and a
+     meaningful score requires a real embedder. This is what stops the
+     script from rotting unnoticed, without needing an API key in CI.
