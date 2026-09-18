@@ -4,6 +4,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ragbridge.rerank import FakeReranker, get_reranker
+
 
 def test_query_ranks_the_exact_matching_chunk_first(app_with_database: FastAPI) -> None:
     """Default mode is "hybrid" (settings.retrieval_mode), so score is a
@@ -75,6 +77,28 @@ def test_query_rejects_an_invalid_retrieval_mode(app_with_database: FastAPI) -> 
     response = client.post("/query", json={"question": "Anything?", "mode": "fuzzy"})
 
     assert response.status_code == 422
+
+
+def test_query_uses_the_rerankers_order(app_with_database: FastAPI) -> None:
+    """POST /query actually calls the reranker and returns its order.
+
+    With the default NoOpReranker, hybrid mode ranks the error-code chunk
+    first for this question (see the hybrid-vs-vector test above).
+    FakeReranker reverses whatever it is given, so overriding get_reranker
+    with it must flip that order - proof the endpoint uses the reranker's
+    output, not retrieval's own order.
+    """
+    app_with_database.dependency_overrides[get_reranker] = lambda: FakeReranker()
+    client = TestClient(app_with_database)
+    error_chunk = "Error code ERR_4021 means the upload exceeded the size limit."
+    other_chunk = "Cats are independent and curious animals."
+    client.post("/documents", files={"file": ("errors.txt", error_chunk.encode(), "text/plain")})
+    client.post("/documents", files={"file": ("cats.txt", other_chunk.encode(), "text/plain")})
+
+    response = client.post("/query", json={"question": "ERR_4021", "top_k": 2})
+
+    snippets = [source["snippet"] for source in response.json()["sources"]]
+    assert snippets == [other_chunk, error_chunk]
 
 
 def test_query_limits_sources_to_top_k(app_with_database: FastAPI) -> None:
