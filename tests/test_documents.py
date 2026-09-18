@@ -11,8 +11,10 @@ from ragbridge.config import Settings, get_settings
 from tests.helpers import build_pdf, fetch_chunks
 
 
-def test_upload_document_creates_a_new_document(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_upload_document_creates_a_new_document(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     content = b"Hello, ragbridge."
 
     response = client.post("/documents", files={"file": ("hello.txt", content, "text/plain")})
@@ -25,8 +27,10 @@ def test_upload_document_creates_a_new_document(app_with_database: FastAPI) -> N
     assert "created_at" in body
 
 
-def test_upload_document_twice_returns_the_existing_document(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_upload_document_twice_returns_the_existing_document(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     content = b"Same content, uploaded twice."
 
     first = client.post("/documents", files={"file": ("a.txt", content, "text/plain")})
@@ -37,9 +41,11 @@ def test_upload_document_twice_returns_the_existing_document(app_with_database: 
     assert second.json()["id"] == first.json()["id"]
 
 
-def test_upload_document_rejects_oversized_file(app_with_database: FastAPI) -> None:
+def test_upload_document_rejects_oversized_file(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
     app_with_database.dependency_overrides[get_settings] = lambda: Settings(max_upload_size=5)
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
 
     response = client.post(
         "/documents", files={"file": ("big.txt", b"more than five bytes", "text/plain")}
@@ -48,16 +54,20 @@ def test_upload_document_rejects_oversized_file(app_with_database: FastAPI) -> N
     assert response.status_code == 413
 
 
-def test_upload_document_rejects_unsupported_content_type(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_upload_document_rejects_unsupported_content_type(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
 
     response = client.post("/documents", files={"file": ("data.json", b"{}", "application/json")})
 
     assert response.status_code == 415
 
 
-def test_list_documents_returns_newest_first(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_list_documents_returns_newest_first(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     first = client.post("/documents", files={"file": ("first.txt", b"first", "text/plain")})
     second = client.post("/documents", files={"file": ("second.txt", b"second", "text/plain")})
 
@@ -70,8 +80,9 @@ def test_list_documents_returns_newest_first(app_with_database: FastAPI) -> None
 
 def test_list_documents_returns_empty_list_when_there_are_none(
     app_with_database: FastAPI,
+    tenant_with_key: str,
 ) -> None:
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
 
     response = client.get("/documents")
 
@@ -79,8 +90,8 @@ def test_list_documents_returns_empty_list_when_there_are_none(
     assert response.json() == []
 
 
-def test_delete_document_removes_it(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_delete_document_removes_it(app_with_database: FastAPI, tenant_with_key: str) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     uploaded = client.post("/documents", files={"file": ("a.txt", b"content", "text/plain")})
     document_id = uploaded.json()["id"]
 
@@ -90,16 +101,20 @@ def test_delete_document_removes_it(app_with_database: FastAPI) -> None:
     assert client.get("/documents").json() == []
 
 
-def test_delete_document_returns_404_when_missing(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_delete_document_returns_404_when_missing(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
 
     response = client.delete(f"/documents/{uuid.uuid4()}")
 
     assert response.status_code == 404
 
 
-def test_upload_text_document_creates_chunks(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_upload_text_document_creates_chunks(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     content = b"First paragraph.\n\nSecond paragraph."
 
     response = client.post("/documents", files={"file": ("notes.txt", content, "text/plain")})
@@ -116,8 +131,9 @@ def test_upload_text_document_creates_chunks(app_with_database: FastAPI) -> None
 
 def test_upload_pdf_document_creates_chunks_with_page_metadata(
     app_with_database: FastAPI,
+    tenant_with_key: str,
 ) -> None:
-    client = TestClient(app_with_database)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     pdf_bytes = build_pdf(["Page one text.", "Page two text."])
 
     response = client.post("/documents", files={"file": ("doc.pdf", pdf_bytes, "application/pdf")})
@@ -131,8 +147,10 @@ def test_upload_pdf_document_creates_chunks_with_page_metadata(
     assert [chunk.metadata_ for chunk in chunks] == [{"page": 1}, {"page": 2}]
 
 
-def test_upload_document_twice_does_not_duplicate_chunks(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_upload_document_twice_does_not_duplicate_chunks(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     content = b"Same content, uploaded twice."
 
     first = client.post("/documents", files={"file": ("a.txt", content, "text/plain")})
@@ -145,8 +163,10 @@ def test_upload_document_twice_does_not_duplicate_chunks(app_with_database: Fast
     assert len(chunks) == 1
 
 
-def test_delete_document_deletes_its_chunks(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_delete_document_deletes_its_chunks(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     uploaded = client.post("/documents", files={"file": ("a.txt", b"some content", "text/plain")})
     document_id = uuid.UUID(uploaded.json()["id"])
 

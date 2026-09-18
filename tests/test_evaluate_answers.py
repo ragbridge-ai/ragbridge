@@ -15,8 +15,10 @@ from evaluation.evaluate_answers import build_records
 from evaluation.evaluate_retrieval import load_dataset, upload_corpus
 
 
-def test_build_records_assembles_the_four_ragas_fields(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_build_records_assembles_the_four_ragas_fields(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     questions = load_dataset()
 
     upload_corpus(client)

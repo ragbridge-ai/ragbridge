@@ -19,8 +19,10 @@ from fastapi.testclient import TestClient
 from evaluation.evaluate_retrieval import evaluate_retrieval, load_dataset, upload_corpus
 
 
-def test_evaluation_script_runs_end_to_end(app_with_database: FastAPI) -> None:
-    client = TestClient(app_with_database)
+def test_evaluation_script_runs_end_to_end(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     questions = load_dataset()
 
     upload_corpus(client)
