@@ -316,3 +316,139 @@ Proposed commit breakdown:
      tenant B's key. This is the safety net for choosing application-level
      filtering over RLS: a forgotten `WHERE` clause fails this test loudly,
      the same day it is introduced, rather than leaking silently.
+
+## Step 3 detail — Redis, the arq worker, and asynchronous processing
+
+Branch: `feat/phase-3-jobs` (created from `main`, off the merged step 2).
+Step 2 makes every document and query tenant-scoped. This step makes a large
+upload not block the request that made it.
+
+**Design gap found while implementing, resolved before writing code:** a
+worker that processes a document asynchronously runs in a **separate
+process**, started independently of the request that accepted the upload,
+and by the time it runs, FastAPI's `UploadFile` and its backing temp file no
+longer exist - the request that received them has already returned. The raw
+bytes therefore have to be persisted somewhere the worker can read them from
+later. This project has no object store and adding one is out of scope for
+this phase (AGENTS.md: do not build a general framework; a Qdrant/S3-shaped
+adapter is explicitly a post-v1 item). Postgres is the only storage already
+depended on, so `documents` gains a `raw_content bytea` column - the original
+uploaded bytes, kept only until ingestion finishes and cleared afterwards.
+`content` (the parsed, joined text) becomes nullable to match: a `pending` or
+`processing` document has none yet.
+
+**Verified against the installed version (arq 0.28.0), not assumed:**
+`arq.connections.create_pool(RedisSettings) -> ArqRedis`,
+`ArqRedis.enqueue_job(function_name: str, *args) -> Job | None`, and a plain
+class named `WorkerSettings` (attributes `functions`, `redis_settings`,
+`on_startup`, `on_shutdown`, ...) is what `arq module:WorkerSettings` on the
+command line reads - matching arq's documented convention, confirmed by
+reading `arq.worker.Worker.__init__`'s actual signature rather than arq's
+docs alone.
+
+**Enqueueing sits behind a `JobQueue` Protocol**, exactly like `Embedder`,
+`Chatter`, and `Reranker`: `ArqJobQueue` enqueues onto a real Redis, consumed
+by a separately-running worker process; `FakeJobQueue` runs the job
+immediately, in the same process, with no Redis and no separate worker. This
+is what keeps step 3 out of CI's way entirely (Phase 1 decision 5, extended
+from "no external provider" to "no external queue either): the test suite
+never opens a real Redis connection, because `FakeJobQueue` makes the
+asynchronous branch of `POST /documents` observable within one request/response
+cycle, the same way `FakeChatter` makes generation observable without a real
+LLM. A real end-to-end run - Redis, the worker process, and a genuinely large
+upload - is a `docker compose up` job, run by hand, the same split Phase 2
+drew between real evaluation and the CI smoke test.
+
+**`parse_pages` (PDF/UTF-8 decoding) stays outside the shared `ingest_document`
+function, not inside it.** `POST /documents`' synchronous path parses a small
+upload immediately, before creating any row, so a bad PDF or bad encoding
+fails the request itself with a `422` and never leaves an orphan document
+behind - today's behaviour, preserved unchanged. The asynchronous path cannot
+do this: there is no HTTP response left to fail once the worker picks the job
+up, so a parse failure there is caught and recorded as `status = "failed"`
+with the error message instead. Both paths call the same `ingest_document`
+(chunk, embed, store, mark `ready`) once they already have parsed pages in
+hand - that is the part actually worth sharing, not the two-line branch
+between `extract_pdf_pages` and `.decode("utf-8")`.
+
+Proposed commit breakdown:
+
+1. **`docs: add Phase 3 step 3 plan`** (this section).
+2. **`build: add arq and redis dependencies, settings, and the redis
+   service`**
+   - `arq` added as a runtime dependency (pulls in `redis` - the async
+     Python client, via `arq.connections`).
+   - `REDIS_URL` (default `redis://localhost:6379/0`) and
+     `ASYNC_PROCESSING_THRESHOLD` (default `100_000` bytes) settings, in
+     `.env.example` too.
+   - `docker-compose.yml` gains a `redis` service (`redis:7-alpine`, a
+     healthcheck on `redis-cli ping`) and a `worker` service - same `build: .`
+     as `app`, command `arq ragbridge.worker.WorkerSettings`, `depends_on`
+     both `postgres` and `redis` healthy, the same `DATABASE_URL`/
+     `OLLAMA_BASE_URL` overrides as `app` plus `REDIS_URL` pointed at the
+     `redis` service by name.
+   - Both new settings are inert until read - safe to add on their own.
+3. **`feat(db): add status, error, and raw_content to documents`**
+   - `status: str`, Python-side default `"pending"` via `mapped_column(default=...)`
+     (not a server default): existing code that builds a `Document(...)`
+     without passing `status=` keeps working unchanged, because SQLAlchemy
+     fills the default in at flush time - the same reason this can be its own
+     commit instead of needing to land together with the endpoint change that
+     gives `status` a real meaning (contrast step 2, where a `NOT NULL`
+     `tenant_id` had no such escape hatch and forced three commits into one).
+   - `error: str | None` and `raw_content: bytes | None`, both nullable.
+     `content` changes from `NOT NULL` to nullable.
+   - Tests: unaffected - nothing observes `status` through the API yet.
+4. **`refactor(ingestion): extract parse_pages and ingest_document`**
+   - New `src/ragbridge/ingestion.py`: `parse_pages(raw, content_type) ->
+     list[str]` (the existing PDF/UTF-8 branch, moved verbatim) and
+     `ingest_document(session, document, pages, settings, embedder) -> None`
+     (the existing chunk/embed/store loop, moved verbatim, plus setting
+     `document.content` and `document.status = "ready"` at the end - new
+     behaviour, but not yet visible anywhere: `DocumentOut` doesn't expose
+     `status` until the next commit).
+   - `api/documents.py`'s `upload_document` calls both instead of inlining
+     them. Pure refactor: existing tests are the proof, exactly as
+     `retrieval.py`'s extraction from `api/query.py` was in Phase 2 step 1.
+5. **`feat(jobs): add the JobQueue protocol and the arq worker`**
+   - New `src/ragbridge/jobs.py`: `JobQueue` Protocol
+     (`enqueue_process_document(document_id) -> None`), `ArqJobQueue` (wraps
+     an `ArqRedis` pool), `FakeJobQueue` (runs the job inline, same process,
+     for tests - see above).
+   - New `src/ragbridge/worker.py`: `process_document(ctx, document_id)` -
+     loads the pending document, parses its `raw_content`, calls
+     `ingest_document`, clears `raw_content`, and commits; any exception is
+     caught and recorded as `document.status = "failed"` with
+     `document.error = str(exception)` instead of re-raising, so a
+     permanently broken upload (a corrupt PDF) fails once instead of
+     retrying forever under arq's default retry behaviour. `WorkerSettings`
+     wires `functions = [process_document]` and builds its own engine and
+     `LiteLLMEmbedder` in `on_startup` - a separate process needs its own
+     database connection and embedder client, not the web process's.
+   - Tests: `process_document` is called directly against a hand-built `ctx`
+     dict (`session_factory`, `embedder`, `settings`) - no Redis, no real
+     worker process, matching how `FakeJobQueue` is tested (see above).
+     Covers: a pending document with valid `raw_content` ends up `ready` with
+     its chunks stored; a pending document whose `raw_content` is not a valid
+     PDF ends up `failed` with a non-empty `error`, and no chunks.
+6. **`feat(api): process large uploads asynchronously; add GET /documents/{id}`**
+   - `POST /documents`: after the size and duplicate checks, uploads over
+     `settings.async_processing_threshold` skip parsing entirely - the
+     document is created with `status = "pending"` and `raw_content = raw`,
+     the job is enqueued via the injected `JobQueue`, and the endpoint returns
+     `202 Accepted` with that document. Uploads at or under the threshold are
+     unchanged except for calling the step 4 refactor's functions instead of
+     inlining them, and now return `status = "ready"` with `201 Created`, as
+     before.
+   - `DocumentOut` gains `status` and `error`.
+   - New `GET /documents/{document_id}`: same tenant-scoped, `404`-on-mismatch
+     lookup as `DELETE`, for a client to poll until `status` is no longer
+     `pending`/`processing`.
+   - Tests: an upload over the threshold returns `202` and `status =
+     "pending"`, with `FakeJobQueue` (decision above) making the rest of the
+     pipeline run inline so the same test can then poll
+     `GET /documents/{id}` and see `status = "ready"` with chunks stored -
+     all within one test, no real queue involved; an upload at or under the
+     threshold is unaffected (`201`, `status = "ready"`, exactly the existing
+     assertions); `GET /documents/{id}` for another tenant's document, or an
+     unknown id, returns `404`.
