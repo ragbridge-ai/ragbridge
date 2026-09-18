@@ -61,7 +61,11 @@ curl -X POST http://localhost:8000/query \
 ```
 
 Returns `{"answer": "...", "sources": [...]}`. Each source reports the originating
-document, its chunk position, a text snippet, and a relevance score.
+document, its chunk position, a text snippet, and a relevance score. Retrieval is
+hybrid by default (vector + keyword search, merged with reciprocal rank fusion -
+see [ADR 0003](docs/adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pass
+`"mode": "vector"` or `"mode": "keyword"` in the request to use a single method
+instead of `RETRIEVAL_MODE`'s default.
 
 ### List and delete documents
 
@@ -82,6 +86,10 @@ the full list and defaults. The ones that most affect answer quality:
 | `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Where to reach Ollama |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | Chunking parameters |
+| `RETRIEVAL_MODE` | `hybrid` | `hybrid` (vector + keyword, merged with reciprocal rank fusion), `vector`, or `keyword` |
+| `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
+| `RERANK_ENABLED` | `false` | Whether `POST /query` reranks retrieved chunks before answering |
+| `RERANK_MODEL` | `cohere/rerank-v3.5` | LiteLLM rerank model, used only when `RERANK_ENABLED=true` |
 
 To use a hosted provider instead of Ollama, change `EMBEDDING_MODEL` / `CHAT_MODEL`
 to any [LiteLLM model name](https://docs.litellm.ai/docs/providers) (for example
@@ -89,6 +97,20 @@ to any [LiteLLM model name](https://docs.litellm.ai/docs/providers) (for example
 environment variable. `EMBEDDING_DIMENSION` and `EMBEDDING_MODEL` are fixed per
 installation: changing either after documents have been uploaded requires a new
 migration and re-embedding every existing chunk.
+
+## Evaluation
+
+`evaluation/` has a small hand-written corpus and question set, plus two scripts:
+retrieval quality (recall@k, MRR - needs only an embedder) and answer quality
+(RAGAS faithfulness / answer relevancy / context precision / context recall - needs
+a real judge LLM). Both run by hand against a live server, never in CI - see
+[docs/evaluation.md](docs/evaluation.md) for how to run them and the latest results.
+
+```bash
+docker compose up -d
+uv run python -m evaluation.evaluate_retrieval
+uv run python -m evaluation.evaluate_answers
+```
 
 ## Development commands
 
