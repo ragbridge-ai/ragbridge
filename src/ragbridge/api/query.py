@@ -11,6 +11,7 @@ from ragbridge.chat import Chatter, get_chatter
 from ragbridge.config import Settings, get_settings
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
+from ragbridge.rerank import Reranker, get_reranker
 from ragbridge.retrieval import hybrid_search
 
 router = APIRouter(tags=["query"])
@@ -44,19 +45,20 @@ async def answer_query(
     session: Annotated[AsyncSession, Depends(get_session)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     chatter: Annotated[Chatter, Depends(get_chatter)],
+    reranker: Annotated[Reranker, Depends(get_reranker)],
     settings: Annotated[Settings, Depends(get_settings)],
 ) -> QueryResponse:
-    """Embed the question, retrieve the nearest chunks, and answer from them."""
+    """Embed the question, retrieve and rerank chunks, and answer from them."""
     [question_embedding] = await embedder.embed([request.question])
 
-    rows = await hybrid_search(
+    candidates = await hybrid_search(
         session,
         question_embedding,
         request.question,
         mode=request.mode or settings.retrieval_mode,
         candidates=settings.retrieval_candidates,
-        top_k=request.top_k,
     )
+    rows = await reranker.rerank(request.question, candidates, request.top_k)
 
     answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
     sources = [

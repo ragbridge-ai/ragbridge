@@ -197,3 +197,70 @@ shape, but nothing combines them yet, and `POST /query` still only calls
      alone would rank them; `mode="vector"` reproduces the pre-hybrid ranking;
      an unsupported `mode` value is rejected by Pydantic with `422`, not a
      runtime error.
+
+## Step 3 detail — reranking
+
+Branch: `feat/phase-2-rerank` (created from `main`, off the merged step 2).
+Step 2 (hybrid retrieval) is merged: `hybrid_search` fuses both arms and
+returns `top_k` rows, ready to display. Proposed commit breakdown:
+
+1. **`docs: add Phase 2 step 3 plan`** (this section).
+2. **`feat(config): add rerank settings`**
+   - `RERANK_ENABLED: bool = False` and `RERANK_MODEL: str =
+     "cohere/rerank-v3.5"`. `.env.example` updated.
+   - **Reordered while implementing:** originally listed after the
+     `Reranker` protocol commit. `get_reranker` (next commit) reads
+     `settings.rerank_enabled` to choose an implementation, so the setting
+     has to exist first - the same order Phase 1 used for `Embedder` and
+     `Chatter` (`feat(config): add embedding, chat, and chunking settings`
+     landed before either protocol), which this plan should have followed
+     to begin with.
+3. **`feat(rerank): add Reranker protocol with LiteLLM, no-op, and fake implementations`**
+   - New `src/ragbridge/rerank.py`, the same shape as `Embedder` (Phase 1
+     step 4) and `Chatter` (step 5): a `Reranker` `Protocol` with `async def
+     rerank(self, query: str, candidates: list[SearchResult], top_k: int) ->
+     list[SearchResult]`.
+   - `NoOpReranker`: returns `candidates[:top_k]`, unchanged order - **the
+     default** (decision 3). Ollama has no rerank endpoint, and a local
+     cross-encoder means bundling torch (~2 GB) for a feature most installs
+     will leave off, so `docker compose up` with no API key keeps reranking
+     nothing until it is explicitly switched on.
+   - `LiteLLMReranker`: calls `litellm.arerank(model=settings.rerank_model,
+     query=query, documents=[chunk.content for chunk, _, _ in candidates],
+     top_n=top_k)`. LiteLLM standardises the rerank response shape across
+     Cohere, Voyage, and Jina, the same way it already standardises chat and
+     embedding responses across providers.
+   - `FakeReranker`: deterministic, no network call - reverses the given
+     order before truncating, so a test can assert that reranking actually
+     changed something, not merely that it ran (mirrors `FakeChatter`'s fixed
+     reply, which exists for the same reason: something checkable that a real
+     provider's response wouldn't be).
+   - `get_reranker` FastAPI dependency: `NoOpReranker()` unless
+     `settings.rerank_enabled`, then `LiteLLMReranker(settings)`.
+   - Tests: `NoOpReranker` returns the first `top_k` candidates, order
+     unchanged; `FakeReranker` returns the reversed order, truncated to
+     `top_k`. Both pure - no session, no network call - unit tested directly.
+4. **`feat(api): wire reranking into POST /query`**
+   - **`hybrid_search`'s contract changes**: it now returns up to
+     `candidates` rows, not `top_k` - narrowing to `top_k` becomes the
+     reranker's job, always, even when reranking is off. `NoOpReranker`'s
+     truncation *is* the `[:top_k]` slice `hybrid_search` used to do itself,
+     moved one layer up so a real reranker can occupy exactly that spot.
+   - **Call out now:** the single-arm modes (`"vector"`, `"keyword"`) also
+     switch to fetching `candidates` rows instead of exactly `top_k`, even
+     when reranking is off - a little more database work than step 2's
+     version, in exchange for one code path shared by every mode instead of
+     a fetch-size special case for "no reranker." `candidates` defaults to
+     20, small enough that the extra cost is not worth a second path
+     (AGENTS.md: prefer simple code over clever code).
+   - `POST /query` takes the `Reranker` dependency and calls
+     `reranker.rerank(request.question, rows, request.top_k)` after
+     `hybrid_search`, in every mode - so `NoOpReranker` (the default) and a
+     real reranker sit in exactly the same call site.
+   - Tests: overriding `get_reranker` with `FakeReranker` and asserting the
+     response comes back in the reversed candidate order proves the endpoint
+     actually calls the reranker, not merely that retrieval's own order
+     survives unchanged; with the default `NoOpReranker`
+     (`RERANK_ENABLED=false`), every step 2 `POST /query` test keeps passing
+     unmodified, because `NoOpReranker`'s truncation reproduces the old
+     internal `[:top_k]` slice exactly.
