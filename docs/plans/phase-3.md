@@ -452,3 +452,106 @@ Proposed commit breakdown:
      threshold is unaffected (`201`, `status = "ready"`, exactly the existing
      assertions); `GET /documents/{id}` for another tenant's document, or an
      unknown id, returns `404`.
+
+**Verified for real, not only against fakes:** a genuine Redis (`docker
+compose up -d redis`) and a real `arq` worker process
+(`uv run arq ragbridge.worker.WorkerSettings`) were run together, a pending
+document was enqueued through a real `ArqJobQueue.enqueue_process_document`,
+and the worker's log showed it picked the job up and completed it - the
+document ended up `status = "ready"` with its content parsed, its chunk
+stored, and `raw_content` cleared. This is what caught a real gap
+`FakeJobQueue`-based tests could not: `docker-compose.yml`'s `redis` service
+had no port mapping to the host, unlike `postgres`, so `REDIS_URL`'s default
+(meant for running the app locally without full `docker compose`) could not
+actually reach it. Fixed in its own commit.
+
+## Step 4 detail — embedding cache and optional answer cache
+
+Branch: `feat/phase-3-caching` (created from `main`, off the merged step 3).
+Step 3 gave this project its first dependency on Redis. This step gives that
+dependency a second job.
+
+**Design found while implementing:** decision 7 says the real embedder
+should be cached "by default," but an eagerly-opened Redis connection would
+repeat step 3's own mistake (a hard dependency on infrastructure most
+installations may never need to run). `ragbridge.cache.Cache` is therefore a
+`Protocol`, exactly like `Embedder`, `Chatter`, `Reranker`, and `JobQueue`:
+`RedisCache` connects lazily, on the first actual `get`/`set`/`incr` call,
+the same way `ArqJobQueue` (step 3) connects lazily on the first enqueue -
+constructing either one is as cheap and connection-free as constructing a
+`LiteLLMEmbedder`. `get_cache` (and `jobs.get_job_queue`) cache the
+constructed instance per `redis_url` with `functools.lru_cache`, the same
+singleton shape `config.get_settings` already uses, so the lazy connection
+is actually reused across requests instead of reopened on every one.
+`FakeCache` is a plain in-memory dict, used by every test - Phase 1 decision
+5, extended from "no real provider" and step 3's "no real queue" to "no real
+cache" either.
+
+**Where the answer cache is invalidated, and why:** decision 7 calls for
+invalidating on "any write," but a large upload's `POST /documents` and the
+moment its content actually becomes searchable are two different times once
+step 3's asynchronous processing exists - the request returns `202` long
+before the worker finishes. Bumping the corpus version at *upload* time would
+invalidate answers that were never actually stale (nothing new was
+searchable yet); bumping it once ingestion actually completes is what
+decision 7 means by "a write." Both the synchronous upload path and the
+worker call the same `ingest_document` (step 3's extraction) at exactly the
+moment a document's chunks become stored and searchable, which is what makes
+it the one correct, shared place to bump `corpus_version:{tenant_id}` -
+neither `POST /documents` nor `ragbridge.worker.process_document` do it
+themselves. `DELETE /documents/{id}` bumps it directly, since deletion is
+synchronous and immediately affects what is searchable.
+
+Proposed commit breakdown:
+
+1. **`docs: add Phase 3 step 4 plan`** (this section).
+2. **`feat(cache): add the Cache protocol, RedisCache, and FakeCache`**
+   - New `src/ragbridge/cache.py`: `Cache` Protocol (`get`, `set` with a
+     `ttl`, `incr`), `RedisCache` (lazy connection, as above, via
+     `redis.asyncio.Redis.from_url(..., decode_responses=True)` - verified
+     against the installed `redis` 5.3.1, not assumed), `FakeCache`
+     (in-memory dict), `get_cache` FastAPI dependency.
+   - `EMBEDDING_CACHE_TTL` (default `86_400`), `ANSWER_CACHE_ENABLED`
+     (default `False`), `ANSWER_CACHE_TTL` (default `3_600`) settings,
+     documented in `.env.example`.
+   - Tests: `FakeCache`'s `get`/`set`/`incr` behave as a real Redis's would
+     (a missing key's `incr` starts from 0; `get` after `set` returns the
+     same value) - covered indirectly through every test that exercises
+     caching below, not a dedicated test file, since `FakeCache` has no
+     behaviour of its own beyond what those tests already require of it.
+3. **`feat(embeddings): add CachingEmbedder, on by default`**
+   - `CachingEmbedder` wraps any `Embedder`, keyed by
+     `f"embedding:{model}:{sha256(text)}"` - the model name in the key is
+     what makes a stale hit structurally impossible (decision 7): change
+     `EMBEDDING_MODEL` and every cached vector is simply unreachable under
+     its new key, never silently wrong.
+   - `get_embedder` wraps `LiteLLMEmbedder` in `CachingEmbedder` unless
+     `EMBEDDING_CACHE_TTL <= 0`. Tests override `get_embedder` wholesale with
+     `FakeEmbedder`, bypassing `CachingEmbedder` entirely - a deterministic
+     fake needs no caching to test, the same reasoning that already applies
+     to `get_chatter`/`get_reranker`'s overrides.
+   - Tests: a unit test for `CachingEmbedder` itself, wrapping a
+     call-counting fake embedder and a `FakeCache` - the same text embedded
+     twice calls the wrapped embedder once; different texts, or the same
+     text under a different `model`, both still call it; an empty text list
+     never touches the cache at all.
+4. **`feat: cache whole answers behind a per-tenant corpus version`**
+   - `ingest_document` (step 3) takes a `Cache` and bumps
+     `corpus_version:{tenant_id}` on success - see "where it is invalidated"
+     above. `ragbridge.worker.JobContext` gains a `cache` key, built in
+     `_on_startup`. `DELETE /documents/{id}` bumps the same key directly.
+   - `POST /query`, when `settings.answer_cache_enabled`: reads the
+     tenant's current corpus version (`"0"` if never bumped), builds a key
+     from `(tenant_id, corpus_version, sha256(question|mode|top_k))`, and
+     returns a cached `QueryResponse` verbatim on a hit; on a miss, runs the
+     normal pipeline and stores the response under that key with
+     `ANSWER_CACHE_TTL`.
+   - Tests: with the cache enabled, a second identical query returns the
+     first response's answer even after `get_chatter` is overridden to a
+     different fake mid-test - proof the chatter was never called again, not
+     merely that the two responses happen to match; uploading a new document
+     between the two queries invalidates the cache instead (the second
+     query's answer reflects the new override, because the corpus version
+     changed and the key no longer matches); with the cache left at its
+     default (disabled), identical queries are recomputed every time,
+     exactly as in every earlier phase.
