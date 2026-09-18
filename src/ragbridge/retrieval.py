@@ -100,26 +100,28 @@ async def hybrid_search(
     *,
     mode: Literal["hybrid", "vector", "keyword"],
     candidates: int,
-    top_k: int,
 ) -> list[SearchResult]:
-    """Retrieve the ``top_k`` best chunks for a question, using ``mode``.
+    """Retrieve up to ``candidates`` chunks for a question, using ``mode``.
+
+    Returns up to ``candidates`` rows, not ``top_k``: narrowing the
+    candidate set down to what a response actually returns is the
+    reranker's job (see ``ragbridge.rerank``), not this function's - even
+    when reranking is off, since the default reranker's whole job is that
+    same narrowing step.
 
     "hybrid" runs ``vector_search`` then ``keyword_search``, each
     returning up to ``candidates`` rows, then merges them with
-    ``reciprocal_rank_fusion`` and keeps the first ``top_k``. The two
-    queries run one after another, not concurrently: both go through the
-    same ``AsyncSession``, and a single session can only have one query in
-    flight at a time - the same rule as a single database connection,
-    which is exactly what a session wraps. "vector" or "keyword" runs
-    only that one arm, with ``limit=top_k`` directly - there is nothing to
-    fuse against, so over-fetching ``candidates`` rows just to immediately
-    truncate them would be wasted work.
+    ``reciprocal_rank_fusion``. The two queries run one after another, not
+    concurrently: both go through the same ``AsyncSession``, and a single
+    session can only have one query in flight at a time - the same rule
+    as a single database connection, which is exactly what a session
+    wraps. "vector" or "keyword" runs only that one arm.
     """
     if mode == "vector":
-        return await vector_search(session, embedding, top_k)
+        return await vector_search(session, embedding, candidates)
     if mode == "keyword":
-        return await keyword_search(session, query, top_k)
+        return await keyword_search(session, query, candidates)
 
     vector_rows = await vector_search(session, embedding, candidates)
     keyword_rows = await keyword_search(session, query, candidates)
-    return reciprocal_rank_fusion([vector_rows, keyword_rows])[:top_k]
+    return reciprocal_rank_fusion([vector_rows, keyword_rows])
