@@ -10,6 +10,7 @@ from ragbridge.api.agent import router as agent_router
 from ragbridge.api.documents import router as documents_router
 from ragbridge.api.health import router as health_router
 from ragbridge.api.query import router as query_router
+from ragbridge.api.search import router as search_router
 from ragbridge.config import get_settings
 from ragbridge.db.session import create_engine, create_session_factory
 
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
     app.include_router(documents_router)
     app.include_router(query_router)
     app.include_router(agent_router)
+    app.include_router(search_router)
     return app
 
 
