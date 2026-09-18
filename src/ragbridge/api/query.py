@@ -1,17 +1,18 @@
 """POST /query: answer a question using retrieval-augmented generation."""
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.chat import Chatter, get_chatter
-from ragbridge.db.models import Chunk, Document
+from ragbridge.config import Settings, get_settings
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
+from ragbridge.rerank import Reranker, get_reranker
+from ragbridge.retrieval import hybrid_search
 
 router = APIRouter(tags=["query"])
 
@@ -21,6 +22,8 @@ SNIPPET_LENGTH = 300
 class QueryRequest(BaseModel):
     question: str
     top_k: int = Field(default=5, ge=1, le=20)
+    mode: Literal["hybrid", "vector", "keyword"] | None = None
+    """Which retrieval arm(s) to use. Defaults to settings.retrieval_mode."""
 
 
 class Source(BaseModel):
@@ -42,18 +45,20 @@ async def answer_query(
     session: Annotated[AsyncSession, Depends(get_session)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     chatter: Annotated[Chatter, Depends(get_chatter)],
+    reranker: Annotated[Reranker, Depends(get_reranker)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> QueryResponse:
-    """Embed the question, retrieve the nearest chunks, and answer from them."""
+    """Embed the question, retrieve and rerank chunks, and answer from them."""
     [question_embedding] = await embedder.embed([request.question])
 
-    distance = Chunk.embedding.cosine_distance(question_embedding).label("distance")
-    result = await session.execute(
-        select(Chunk, Document, distance)
-        .join(Document, Chunk.document_id == Document.id)
-        .order_by(distance)
-        .limit(request.top_k)
+    candidates = await hybrid_search(
+        session,
+        question_embedding,
+        request.question,
+        mode=request.mode or settings.retrieval_mode,
+        candidates=settings.retrieval_candidates,
     )
-    rows = result.all()
+    rows = await reranker.rerank(request.question, candidates, request.top_k)
 
     answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
     sources = [
@@ -62,9 +67,9 @@ async def answer_query(
             filename=document.filename,
             chunk_index=chunk.chunk_index,
             snippet=chunk.content[:SNIPPET_LENGTH],
-            score=1 - cosine_distance,
+            score=score,
         )
-        for chunk, document, cosine_distance in rows
+        for chunk, document, score in rows
     ]
 
     return QueryResponse(answer=answer, sources=sources)

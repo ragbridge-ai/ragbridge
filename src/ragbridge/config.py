@@ -1,6 +1,7 @@
 """Application settings, loaded from environment variables."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -36,6 +37,30 @@ class Settings(BaseSettings):
     """Maximum characters per chunk, before overlap. See ragbridge.chunking."""
     chunk_overlap: int = 200
     """Characters repeated between consecutive chunks of the same paragraph."""
+
+    retrieval_mode: Literal["hybrid", "vector", "keyword"] = "hybrid"
+    """Which retrieval arm(s) POST /query uses, unless the request overrides it.
+
+    "hybrid" runs vector and keyword search and merges them with
+    reciprocal rank fusion; "vector" or "keyword" runs only that one arm.
+    """
+    retrieval_candidates: int = 20
+    """Rows each arm returns before fusion, in "hybrid" mode.
+
+    Larger than top_k on purpose: fusion (and later, reranking) narrows a
+    wide, cheap candidate set down to top_k - retrieving only top_k per
+    arm would give a later reranker nothing extra to rerank.
+    """
+
+    rerank_enabled: bool = False
+    """Whether POST /query reranks retrieved chunks before answering.
+
+    Off by default: the default reranker (NoOpReranker) needs no provider
+    or API key, so a fresh docker compose up with local Ollama keeps
+    working unchanged - Ollama itself has no rerank endpoint anyway.
+    """
+    rerank_model: str = "cohere/rerank-v3.5"
+    """LiteLLM rerank model name, used only when rerank_enabled is true."""
 
 
 @lru_cache
