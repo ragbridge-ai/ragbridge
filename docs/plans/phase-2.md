@@ -339,3 +339,125 @@ Proposed commit breakdown:
      a specific score, because `FakeEmbedder` has no semantics and a
      meaningful score requires a real embedder. This is what stops the
      script from rotting unnoticed, without needing an API key in CI.
+
+## Step 5 detail — answer quality with RAGAS
+
+Branch: `feat/phase-2-ragas` (created from `main`, off the merged step 4).
+Step 4 (recall@k, MRR) measures whether retrieval finds the right chunk.
+This step measures the thing retrieval can't: whether the *generated
+answer* is actually faithful to that chunk and relevant to the question -
+which needs a judge LLM to assess, so it is always run by hand (decision 5),
+never in CI.
+
+**Everything below was verified against the actually-installed `ragas`
+version (`0.4.3`) and a real local Ollama instance before being written into
+this plan or any code** - RAGAS's Python API has changed enough across
+versions that guessing from memory would have produced code that imports
+cleanly and then fails at the first real call.
+
+**Dependency issue found and fixed:** `ragas==0.4.3` fails at
+`import ragas` with `ModuleNotFoundError: No module named
+'langchain_community.chat_models.vertexai'` against the latest
+`langchain-community` (`0.4.2`) - that submodule was removed as part of
+`langchain-community`'s sunset, but `ragas` still imports it unconditionally.
+Fix: pin `langchain-community<0.4` alongside `ragas` in the dev group,
+with a comment in `pyproject.toml` explaining why. See ADR 0004.
+
+**API design found while verifying:** `ragas`'s newer, non-deprecated
+metric classes (`ragas.metrics.collections.{Faithfulness,AnswerRelevancy,
+ContextPrecision,ContextRecall}`) require a "modern instructor-based" LLM
+(`ragas.llms.llm_factory`, wrapping an `AsyncOpenAI`-shaped client) - they
+explicitly reject the classic `LangchainLLMWrapper` path with a clear error.
+Since Ollama serves an OpenAI-compatible API at `/v1`, `llm_factory` is
+pointed at `AsyncOpenAI(base_url=f"{settings.ollama_base_url}/v1",
+api_key="ollama")` by default - the same local, key-free judge setup the
+rest of the app already assumes, no new provider needed. Embeddings use
+`ragas.embeddings.LiteLLMEmbeddings`, matching `settings.embedding_model`.
+The top-level `ragas.evaluate()` orchestrator does **not** yet accept these
+newer metric objects (verified: it raises `TypeError`, "All metrics must be
+initialised metric objects") - the script calls each metric's `.ascore(...)`
+directly instead.
+
+**A second, unrelated regression found because of this dependency, fixed
+in its own commit:** `ragas` pulls in `langchain-core` → `langsmith`, which
+depends on a package called `httpx2`. Once `httpx2` is importable,
+`starlette.testclient.TestClient` switches its base class from
+`httpx.Client` to `httpx2.Client` (a deprecation warning already visible in
+every test run since Phase 1 - "install httpx2 instead" - was the advance
+notice). This breaks `evaluate_retrieval.py`'s `client: httpx.Client` type
+hint from step 4: `TestClient` is no longer nominally an `httpx.Client`,
+though it is still behaviorally identical (the existing smoke test keeps
+passing at runtime; only `mypy` catches it). Fixed by replacing the nominal
+`httpx.Client` type hints in both evaluation scripts with a small structural
+`Protocol` capturing only the `.post(...)` call they actually use - the same
+"depend on shape, not on a concrete class" idiom this codebase already uses
+for `Embedder`, `Chatter`, and `Reranker`, and more robust than assuming
+which HTTP library `TestClient` happens to subclass this month.
+
+**Dataset change:** each `evaluation/dataset.jsonl` line gains a
+`reference_answer` field - a short, ground-truth answer, grounded in the
+same corpus paragraph as `source_snippet`. `context_precision` and
+`context_recall` need a reference to compare retrieved context against;
+`faithfulness` and `answer_relevancy` don't use it. The field is additive
+and optional to consumers: `evaluate_retrieval.py`'s own scoring never reads
+it, so step 4's script and tests are unaffected.
+
+Proposed commit breakdown:
+
+1. **`docs: add Phase 2 step 5 plan`** (this section).
+2. **`feat(evaluation): add ground-truth answers to the dataset`**
+   - `evaluation/dataset.jsonl`: add `reference_answer` to all 25 lines.
+   - `Question` (in `evaluate_retrieval.py`) gains a `reference_answer: str`
+     field; `load_dataset()` parses it. Verified the same way step 4's
+     `source_snippet`s were: every `reference_answer` is grounded in its
+     paragraph's actual content, not fabricated beyond it.
+3. **`build: add ragas as a dev dependency`**
+   - `ragas` and the `langchain-community<0.4` pin (see above), both dev-only
+     - never imported by `src/ragbridge`, matching decision 5's point that
+     evaluation stays out of the shipped service.
+   - **Bundled into this same commit, not a separate one:** replacing
+     `httpx.Client` in `evaluate_retrieval.py`'s function signatures with a
+     small `Protocol` (`post(...) -> a response with .raise_for_status() and
+     .json()`). This dependency is *what breaks* `TestClient`'s typing (see
+     above) - a commit that adds `ragas` alone would leave `mypy` failing
+     until the next commit, and every commit here needs to pass all checks
+     on its own, so the fix travels with the change that causes it.
+4. **`feat(evaluation): add the RAGAS answer-quality evaluation script`**
+   - New `evaluation/evaluate_answers.py`: `build_records(client, questions,
+     *, top_k=5)` (posts each question to `/query`, assembles
+     `{user_input, response, retrieved_contexts, reference}` records -
+     RAGAS's field names) and `score_records(llm, embeddings, records)`
+     (scores every record on all four metrics concurrently per record with
+     `asyncio.gather` - safe here, unlike step 2's retrieval arms, because
+     each metric call is an independent LLM request through its own client,
+     not several queries sharing one constrained `AsyncSession`) and averages
+     each metric with `statistics.mean`.
+   - `main()` builds the judge LLM and embeddings as described above and
+     prints all four scores - run by hand (decision 5).
+   - New `tests/test_evaluate_answers.py`: the CI smoke test can only cover
+     `build_records` (upload the corpus, call `/query`, assemble records) -
+     it never calls `score_records`, because there is no fake judge LLM to
+     call instead of a real one (unlike `Embedder`/`Chatter`/`Reranker`,
+     nothing here is behind a `Protocol` with a `Fake` implementation: RAGAS's
+     metrics are inherently "ask a real model," not a computation this
+     codebase owns). The smoke test asserts each record has the four expected
+     fields, correctly populated from the API response and the dataset.
+5. **`docs(evaluation): add evaluation.md, README scores, and ADRs`**
+   - `docs/evaluation.md`: how to run both evaluation scripts, and a results
+     table stamped with the exact models and date used (decision 5) - **left
+     as a template with no scores filled in**, not fabricated numbers: a real
+     run needs the maintainer's own machine, and a score without a real run
+     behind it is worse than no score. Early exploratory runs against local
+     Ollama (`llama3.2`, done while verifying the API above) returned `0.0`
+     for `faithfulness` and `context_recall` on an easy, obviously-supported
+     example - a small 3B local model may not reliably produce the
+     structured reasoning RAGAS's metrics ask for, which is itself worth
+     recording as a real finding, not silently omitted.
+   - README: short "Evaluation" section linking to `docs/evaluation.md`.
+   - `docs/adr/0003-hybrid-search-with-reciprocal-rank-fusion.md`: why RRF
+     over score-weighted blending (decision 1).
+   - `docs/adr/0004-answer-quality-evaluation-with-ragas.md`: why RAGAS, why
+     it runs outside CI (decision 5), and the two dependency issues found and
+     fixed while building step 5, so a future upgrade of `ragas` or
+     `langchain-community` has a documented reason not to just "clean up"
+     the pin.
