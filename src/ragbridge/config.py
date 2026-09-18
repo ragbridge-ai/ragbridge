@@ -97,6 +97,20 @@ class Settings(BaseSettings):
     langfuse_host: str = "https://cloud.langfuse.com"
     """A self-hosted Langfuse instance can point this elsewhere."""
 
+    agent_max_steps: int = 3
+    """Hard ceiling on retrieval rounds per POST /agent call.
+
+    Enforced by the loop itself, not by the prompt: a request may ask for
+    fewer steps, never more (decision 4, docs/plans/phase-4.md).
+    """
+    agent_planner_model: str = ""
+    """LiteLLM model name used to decide what to search for next.
+
+    Empty means reuse chat_model. Planning needs reliable structured
+    output and answering needs good prose, so an installation can point
+    this at a stronger model without changing the answering model.
+    """
+
 
 @lru_cache
 def get_settings() -> Settings:
