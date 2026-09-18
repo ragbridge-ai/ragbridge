@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     rerank_model: str = "cohere/rerank-v3.5"
     """LiteLLM rerank model name, used only when rerank_enabled is true."""
 
+    redis_url: str = "redis://localhost:6379/0"
+    """Connection used to enqueue and run background jobs (arq)."""
+    async_processing_threshold: int = 100_000
+    """Uploads larger than this many bytes are processed by the background
+    worker instead of within the request (see ragbridge.jobs, ragbridge.worker).
+    """
+
 
 @lru_cache
 def get_settings() -> Settings:

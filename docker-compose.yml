@@ -16,17 +16,27 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   app:
     build: .
     restart: unless-stopped
     env_file:
       - .env
     environment:
-      # Inside the Docker network, the database is reachable by service
-      # name, not localhost. Ollama is expected to keep running directly
-      # on the host (not in Compose), so it needs the Docker-for-host
-      # address instead of the container's own localhost.
+      # Inside the Docker network, services are reachable by name, not
+      # localhost. Ollama is expected to keep running directly on the
+      # host (not in Compose), so it needs the Docker-for-host address
+      # instead of the container's own localhost.
       DATABASE_URL: postgresql+psycopg://ragbridge:ragbridge@postgres:5432/ragbridge
+      REDIS_URL: redis://redis:6379/0
       OLLAMA_BASE_URL: http://host.docker.internal:11434
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -34,6 +44,26 @@ services:
       - "8000:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    command: ["arq", "ragbridge.worker.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://ragbridge:ragbridge@postgres:5432/ragbridge
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:
