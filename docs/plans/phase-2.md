@@ -205,7 +205,17 @@ Step 2 (hybrid retrieval) is merged: `hybrid_search` fuses both arms and
 returns `top_k` rows, ready to display. Proposed commit breakdown:
 
 1. **`docs: add Phase 2 step 3 plan`** (this section).
-2. **`feat(rerank): add Reranker protocol with LiteLLM, no-op, and fake implementations`**
+2. **`feat(config): add rerank settings`**
+   - `RERANK_ENABLED: bool = False` and `RERANK_MODEL: str =
+     "cohere/rerank-v3.5"`. `.env.example` updated.
+   - **Reordered while implementing:** originally listed after the
+     `Reranker` protocol commit. `get_reranker` (next commit) reads
+     `settings.rerank_enabled` to choose an implementation, so the setting
+     has to exist first - the same order Phase 1 used for `Embedder` and
+     `Chatter` (`feat(config): add embedding, chat, and chunking settings`
+     landed before either protocol), which this plan should have followed
+     to begin with.
+3. **`feat(rerank): add Reranker protocol with LiteLLM, no-op, and fake implementations`**
    - New `src/ragbridge/rerank.py`, the same shape as `Embedder` (Phase 1
      step 4) and `Chatter` (step 5): a `Reranker` `Protocol` with `async def
      rerank(self, query: str, candidates: list[SearchResult], top_k: int) ->
@@ -230,9 +240,6 @@ returns `top_k` rows, ready to display. Proposed commit breakdown:
    - Tests: `NoOpReranker` returns the first `top_k` candidates, order
      unchanged; `FakeReranker` returns the reversed order, truncated to
      `top_k`. Both pure - no session, no network call - unit tested directly.
-3. **`feat(config): add rerank settings`**
-   - `RERANK_ENABLED: bool = False` and `RERANK_MODEL: str =
-     "cohere/rerank-v3.5"`. `.env.example` updated.
 4. **`feat(api): wire reranking into POST /query`**
    - **`hybrid_search`'s contract changes**: it now returns up to
      `candidates` rows, not `top_k` - narrowing to `top_k` becomes the

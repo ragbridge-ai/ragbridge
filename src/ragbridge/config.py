@@ -52,6 +52,16 @@ class Settings(BaseSettings):
     arm would give a later reranker nothing extra to rerank.
     """
 
+    rerank_enabled: bool = False
+    """Whether POST /query reranks retrieved chunks before answering.
+
+    Off by default: the default reranker (NoOpReranker) needs no provider
+    or API key, so a fresh docker compose up with local Ollama keeps
+    working unchanged - Ollama itself has no rerank endpoint anyway.
+    """
+    rerank_model: str = "cohere/rerank-v3.5"
+    """LiteLLM rerank model name, used only when rerank_enabled is true."""
+
 
 @lru_cache
 def get_settings() -> Settings:
