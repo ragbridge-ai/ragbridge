@@ -1,10 +1,14 @@
 """Retrieval functions: turn a query into ranked chunks.
 
 Two independent arms, kept as separate functions so each can be tested,
-composed, and swapped on its own. Phase 2 step 2 fuses their results with
-Reciprocal Rank Fusion; this step only gives each arm a home and a shared
-return shape, so fusion has something uniform to work with.
+composed, and swapped on its own. ``reciprocal_rank_fusion`` merges their
+results, and ``hybrid_search`` ties everything together into the one
+function ``POST /query`` calls.
 """
+
+import uuid
+from collections.abc import Sequence
+from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -58,3 +62,64 @@ async def keyword_search(session: AsyncSession, query: str, limit: int) -> list[
         .limit(limit)
     )
     return [(chunk, document, rank) for chunk, document, rank in result.all()]
+
+
+def reciprocal_rank_fusion(
+    rankings: Sequence[Sequence[SearchResult]], *, k: int = 60
+) -> list[SearchResult]:
+    """Merge several rankings of the same items with Reciprocal Rank Fusion.
+
+    Each ranking is one retrieval arm's results, best first. An item is
+    identified by its chunk id; its fused score is the sum, over every
+    ranking it appears in, of ``1 / (k + rank)`` (rank is 1-based). This
+    uses only an item's *position* in each ranking, never the arm's own
+    score - a cosine similarity and a ``ts_rank`` are not on a comparable
+    scale, so combining them by position needs no tuning and no score
+    normalisation (see docs/plans/phase-2.md, decision 1).
+
+    A pure function: no session, no ``await``. Returns one row per
+    distinct chunk, sorted by fused score, best first.
+    """
+    fused_scores: dict[uuid.UUID, float] = {}
+    rows_by_chunk_id: dict[uuid.UUID, tuple[Chunk, Document]] = {}
+
+    for ranking in rankings:
+        for rank, (chunk, document, _) in enumerate(ranking, start=1):
+            fused_scores[chunk.id] = fused_scores.get(chunk.id, 0.0) + 1 / (k + rank)
+            rows_by_chunk_id.setdefault(chunk.id, (chunk, document))
+
+    merged = [(*rows_by_chunk_id[chunk_id], score) for chunk_id, score in fused_scores.items()]
+    merged.sort(key=lambda row: row[2], reverse=True)
+    return merged
+
+
+async def hybrid_search(
+    session: AsyncSession,
+    embedding: list[float],
+    query: str,
+    *,
+    mode: Literal["hybrid", "vector", "keyword"],
+    candidates: int,
+    top_k: int,
+) -> list[SearchResult]:
+    """Retrieve the ``top_k`` best chunks for a question, using ``mode``.
+
+    "hybrid" runs ``vector_search`` then ``keyword_search``, each
+    returning up to ``candidates`` rows, then merges them with
+    ``reciprocal_rank_fusion`` and keeps the first ``top_k``. The two
+    queries run one after another, not concurrently: both go through the
+    same ``AsyncSession``, and a single session can only have one query in
+    flight at a time - the same rule as a single database connection,
+    which is exactly what a session wraps. "vector" or "keyword" runs
+    only that one arm, with ``limit=top_k`` directly - there is nothing to
+    fuse against, so over-fetching ``candidates`` rows just to immediately
+    truncate them would be wasted work.
+    """
+    if mode == "vector":
+        return await vector_search(session, embedding, top_k)
+    if mode == "keyword":
+        return await keyword_search(session, query, top_k)
+
+    vector_rows = await vector_search(session, embedding, candidates)
+    keyword_rows = await keyword_search(session, query, candidates)
+    return reciprocal_rank_fusion([vector_rows, keyword_rows])[:top_k]
