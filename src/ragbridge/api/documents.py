@@ -12,12 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.auth import get_tenant
-from ragbridge.chunking import chunk_text
 from ragbridge.config import Settings, get_settings
-from ragbridge.db.models import Chunk, Document, Tenant
+from ragbridge.db.models import Document, Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
-from ragbridge.pdf import extract_pdf_pages
+from ragbridge.ingestion import ingest_document, parse_pages
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -77,56 +76,28 @@ async def upload_document(
         response.status_code = status.HTTP_200_OK
         return existing
 
-    if content_type == "application/pdf":
-        try:
-            pages = extract_pdf_pages(raw)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
-            ) from exc
-    else:
-        try:
-            pages = [raw.decode("utf-8")]
-        except UnicodeDecodeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="file is not valid UTF-8 text",
-            ) from exc
+    try:
+        pages = parse_pages(raw, content_type)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="file is not valid UTF-8 text",
+        ) from exc
 
     document = Document(
         tenant_id=tenant.id,
         filename=filename,
         content_type=content_type,
         sha256=sha256,
-        content="\n\n".join(pages),
     )
     session.add(document)
     await session.flush()
 
-    is_pdf = content_type == "application/pdf"
-    chunk_contents: list[str] = []
-    chunk_metadata: list[dict[str, int]] = []
-    for page_number, page_text in enumerate(pages, start=1):
-        for chunk_content in chunk_text(
-            page_text, chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap
-        ):
-            chunk_contents.append(chunk_content)
-            chunk_metadata.append({"page": page_number} if is_pdf else {})
-
-    embeddings = await embedder.embed(chunk_contents) if chunk_contents else []
-    for index, (content, metadata, embedding) in enumerate(
-        zip(chunk_contents, chunk_metadata, embeddings, strict=True)
-    ):
-        session.add(
-            Chunk(
-                document_id=document.id,
-                tenant_id=tenant.id,
-                chunk_index=index,
-                content=content,
-                embedding=embedding,
-                metadata_=metadata,
-            )
-        )
+    await ingest_document(session, document, pages, settings, embedder)
 
     await session.commit()
     await session.refresh(document)
