@@ -55,6 +55,27 @@ def app_with_database() -> FastAPI:
     return app
 
 
+async def _create_tenant_with_key(
+    session_factory: async_sessionmaker[AsyncSession], name: str
+) -> str:
+    """Create a tenant with one active API key, returning the raw key."""
+    key = generate_api_key()
+    async with session_factory() as session:
+        tenant = Tenant(name=name)
+        session.add(tenant)
+        await session.flush()
+        session.add(
+            ApiKey(
+                tenant_id=tenant.id,
+                key_hash=hash_api_key(key),
+                prefix=api_key_prefix(key),
+                name="test-key",
+            )
+        )
+        await session.commit()
+    return key
+
+
 @pytest.fixture
 def tenant_with_key(app_with_database: FastAPI) -> str:
     """Create a tenant with one active API key, returning the raw key.
@@ -63,26 +84,15 @@ def tenant_with_key(app_with_database: FastAPI) -> str:
     belongs to - the tenant and its api_keys row are plumbing that
     get_tenant needs, not something these tests inspect.
     """
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+    return asyncio.run(_create_tenant_with_key(session_factory, "test-tenant"))
 
-    async def create() -> str:
-        key = generate_api_key()
-        session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
-        async with session_factory() as session:
-            tenant = Tenant(name="test-tenant")
-            session.add(tenant)
-            await session.flush()
-            session.add(
-                ApiKey(
-                    tenant_id=tenant.id,
-                    key_hash=hash_api_key(key),
-                    prefix=api_key_prefix(key),
-                    name="test-key",
-                )
-            )
-            await session.commit()
-        return key
 
-    return asyncio.run(create())
+@pytest.fixture
+def second_tenant_with_key(app_with_database: FastAPI) -> str:
+    """A second, independent tenant and key - for tenant isolation tests."""
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+    return asyncio.run(_create_tenant_with_key(session_factory, "test-tenant-2"))
 
 
 @pytest.fixture
