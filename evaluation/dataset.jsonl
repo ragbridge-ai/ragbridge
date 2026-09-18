@@ -1,0 +1,25 @@
+{"question": "How many days of paid vacation do full-time employees get each year?", "source_document": "hr-policy.md", "source_snippet": "22 days of paid vacation per calendar year"}
+{"question": "Do I need a doctor's note to take a sick day?", "source_document": "hr-policy.md", "source_snippet": "doctor's note is required only for absences longer than three consecutive days"}
+{"question": "How many days a week can I work from home?", "source_document": "hr-policy.md", "source_snippet": "work remotely up to three days per week"}
+{"question": "How long is parental leave at Acme Cloud?", "source_document": "hr-policy.md", "source_snippet": "16 weeks of paid parental leave"}
+{"question": "Do small expenses need manager approval?", "source_document": "hr-policy.md", "source_snippet": "expenses under $75 can be submitted through the expense portal without a manager's approval"}
+{"question": "How many days do I have to request a refund?", "source_document": "refund-policy.md", "source_snippet": "full refund within 14 days of purchase"}
+{"question": "Can I get a refund for the onboarding setup fee?", "source_document": "refund-policy.md", "source_snippet": "onboarding packages and one-time setup fees are non-refundable"}
+{"question": "How do I ask for a refund?", "source_document": "refund-policy.md", "source_snippet": "email billing@acmecloud.example with your invoice number"}
+{"question": "What happens if I file a chargeback instead of contacting support?", "source_document": "refund-policy.md", "source_snippet": "account suspended until the dispute is resolved"}
+{"question": "What does ERR_1001 mean?", "source_document": "api-error-codes.md", "source_snippet": "ERR_1001 means the API key is missing"}
+{"question": "What does ERR_1002 mean?", "source_document": "api-error-codes.md", "source_snippet": "ERR_1002 means the API key has expired"}
+{"question": "What does ERR_2050 mean?", "source_document": "api-error-codes.md", "source_snippet": "ERR_2050 means the request payload exceeded the 5 MB size limit"}
+{"question": "What does ERR_3100 mean?", "source_document": "api-error-codes.md", "source_snippet": "ERR_3100 means the rate limit of 100 requests per minute was exceeded"}
+{"question": "What does ERR_4021 mean?", "source_document": "api-error-codes.md", "source_snippet": "ERR_4021 means the uploaded file exceeded the maximum size of 10 MB"}
+{"question": "What does a new employee get on their first day?", "source_document": "onboarding-guide.md", "source_snippet": "receive a laptop, a company email address, and access to the internal wiki"}
+{"question": "When do new hires get access to Acme Cloud's own product?", "source_document": "onboarding-guide.md", "source_snippet": "access to Acme Cloud's own product within their first week"}
+{"question": "What is the buddy program?", "source_document": "onboarding-guide.md", "source_snippet": "paired with a buddy from a different team for their first 30 days"}
+{"question": "How long do I have to enroll in health insurance?", "source_document": "onboarding-guide.md", "source_snippet": "30 days from their start date to enroll in health insurance"}
+{"question": "What are the password requirements?", "source_document": "security-policy.md", "source_snippet": "passwords to be at least 12 characters long"}
+{"question": "Is two-factor authentication required for admins?", "source_document": "security-policy.md", "source_snippet": "Two-factor authentication is mandatory for all accounts with administrator access"}
+{"question": "How long is customer data kept after cancellation?", "source_document": "security-policy.md", "source_snippet": "retained for 90 days after account cancellation"}
+{"question": "How fast must a security incident be reported?", "source_document": "security-policy.md", "source_snippet": "reported to security@acmecloud.example within one hour of discovery"}
+{"question": "When does Acme Cloud bill customers?", "source_document": "billing-faq.md", "source_snippet": "bills customers monthly, on the anniversary of their signup date"}
+{"question": "What payment methods does Acme Cloud accept?", "source_document": "billing-faq.md", "source_snippet": "accepts credit cards and ACH bank transfers"}
+{"question": "Where can I find my invoices?", "source_document": "billing-faq.md", "source_snippet": "available for download from the billing portal"}
