@@ -6,12 +6,18 @@ smart search over its own data, without moving the application to Python.
 
 ## Status
 
-**v0.3.0 — Agents and MCP.** On top of the production-ready service (API keys,
-multi-tenancy, background jobs, caching, Langfuse tracing), `POST /agent` can search
-more than once for questions whose answer lives in several places, and an MCP server
-lets a client such as Claude Desktop search your documents directly. See
-[AGENTS.md](AGENTS.md) for the full roadmap and [docs/plans/phase-4.md](docs/plans/phase-4.md)
-for the decisions behind this phase.
+**v1.0.0 — Deploy and release.** A RAG service for existing applications: document
+upload (text, Markdown, PDF), hybrid retrieval, answers with sources, API keys and
+multi-tenancy, background processing, caching, Langfuse tracing, a multi-step agent
+endpoint, and an MCP server. `docker-compose.prod.yml` runs it on a single Linux
+server behind a TLS proxy; the [deployment guide](docs/deployment.md) says exactly what
+was verified and what was not - **notably, it has not yet been run on a real server or
+with a real domain.** See [AGENTS.md](AGENTS.md) for the roadmap and
+[docs/plans/phase-5.md](docs/plans/phase-5.md) for this phase's decisions.
+
+Documentation: [demo](docs/demo.md) (a real run, output included) ·
+[deployment](docs/deployment.md) · [evaluation](docs/evaluation.md) ·
+[decisions (ADRs)](docs/adr/).
 
 ## Requirements
 
@@ -126,10 +132,16 @@ fewer searches, never more than the server allows.
 The planner must reply with a small JSON object. **If it cannot** - a reply that is not
 valid JSON, names an unknown action, or asks to search for nothing - the agent answers
 with what it has found so far, so `/agent` degrades to `/query` behaviour instead of
-failing ([ADR 0006](docs/adr/0006-hand-rolled-agent-loop-instead-of-langgraph.md)). In a
-small check with the default `llama3.2`, all 12 planner replies parsed, but its
-decisions varied between runs and answer quality with `/agent` has not been evaluated.
-A stronger planner model can be set with `AGENT_PLANNER_MODEL`.
+failing ([ADR 0006](docs/adr/0006-hand-rolled-agent-loop-instead-of-langgraph.md)).
+
+**Measured, and worth knowing before you rely on it:** with the default `llama3.2` as
+planner, `/agent` is *not* meaningfully better than `/query` on questions that need
+several searches. On a test built for that (answers that can only be found through a
+chain of documents), it answered 5 and 2 of 30 correctly at two and three hops against
+`/query`'s 2 and 0 - within noise - because the planner usually decided one search was
+enough. The loop itself works; the default planner is the weak part. A stronger model
+via `AGENT_PLANNER_MODEL` was not tested. Full method, numbers and caveats:
+[docs/evaluation.md](docs/evaluation.md).
 Each call is independent; there are no sessions or follow-up questions.
 
 ### List, fetch, and delete documents
@@ -191,6 +203,23 @@ Both transports send every tool call through the REST API with the caller's own 
 tenant isolation applies exactly as it does everywhere else - see
 [ADR 0007](docs/adr/0007-mcp-server-on-the-mcp-sdk-2x.md).
 
+## Deploying
+
+For a real server, use the production Compose file, not the development one. It
+publishes only a TLS proxy, refuses to start without its secrets, and runs the app as an
+unprivileged user:
+
+```bash
+cp .env.prod.example .env.prod     # fill in POSTGRES_PASSWORD and REDIS_PASSWORD
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+```
+
+Sizing, TLS and domains, choosing models, backups and restore, upgrades, security notes
+and known limitations are in [docs/deployment.md](docs/deployment.md). A 21-check smoke
+test of this stack (`scripts/smoke-prod.sh`) runs in CI. On a 2 vCPU / 4 GB server, run
+embeddings locally and use a hosted chat model: measured, a local chat model as well
+leaves almost no memory headroom.
+
 ## Configuration
 
 All configuration is environment variables - see [.env.example](.env.example) for
@@ -200,6 +229,8 @@ the full list and defaults. The ones that most affect answer quality and behavio
 |---|---|---|
 | `DATABASE_URL` | `postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge` | PostgreSQL connection (compose overrides it for the containers) |
 | `MAX_UPLOAD_SIZE` | `10000000` | Largest accepted upload in bytes; bigger files get `413` |
+| `ENVIRONMENT` | `development` | `development` or `production`. In production the app refuses to start with the database credentials published in `.env.example` |
+| `ENABLE_DOCS` | `true` | Serve `/docs`, `/redoc` and `/openapi.json`; the production Compose file turns it off |
 | `EMBEDDING_MODEL` | `ollama/nomic-embed-text` | LiteLLM model used to embed chunks |
 | `EMBEDDING_DIMENSION` | `768` | Must match the embedding model's output size |
 | `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |
@@ -258,6 +289,7 @@ uv run pytest              # run tests
 uv run ruff check .        # lint
 uv run ruff format .       # format
 uv run mypy                # type check
+scripts/smoke-prod.sh       # build and smoke-test the production stack (needs Docker)
 ```
 
 Tests run against a real PostgreSQL with pgvector (`docker compose up -d postgres`)

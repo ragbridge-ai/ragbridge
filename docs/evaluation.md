@@ -55,6 +55,31 @@ A judge call can fail per metric per record (see ADR 0004's Consequences) - a
 failure is excluded from that metric's average and reported separately, not counted
 as a zero.
 
+## Multi-step questions: `/agent` versus `/query`
+
+The retrieval corpus above is six documents of under 1 KB each - about one chunk
+apiece - so a single `/query` at `top_k=5` already returns 5 of the 6 chunks.
+Retrieval there is capped near 100%, which leaves an agent nothing to improve, and
+running `/agent` on it would only produce a meaningless tie. `evaluate_agent.py`
+builds a corpus where the answer *cannot* be found from the question alone: chains
+of four short documents (project -> owner -> manager -> email), with invented
+names so no model can answer from memory, asked at three depths.
+
+```bash
+docker compose up -d
+uv run ragbridge-admin create-tenant --name eval
+uv run python -m evaluation.evaluate_agent --api-key <key>
+```
+
+- **1-hop** ("What is the email address of *Name*?") is the control: it names the
+  person, so one search suffices. It checks that the agent does not do worse.
+- **2-hop** names only the project, so the owner must be found first.
+- **3-hop** names only the project and asks for the *manager's* email: three searches.
+- **Answer document retrieved**: the document holding the answer is among the
+  returned sources. **Answer correct**: the answer text contains the exact email
+  address, so no LLM judge is needed (ADR 0004 found the default model unreliable as
+  one). **Mean steps**: searches the agent ran (a `/query` is always one).
+
 ## Results
 
 Every run below is stamped with the exact models and date used - a score without its
@@ -100,3 +125,47 @@ model (`--judge-model llama3.1:8b` or similar, if pulled) or a hosted one (point
 column. Run `evaluate_answers.py` yourself to see the exact per-record validation
 errors on stderr (the same `instructor.v2.core.errors.InstructorRetryException`
 detail shown while building this script - see ADR 0004).
+
+### Agent versus query (`evaluate_agent.py`)
+
+2026-09-19. `ollama/llama3.2` answers **and** plans (the defaults),
+`ollama/nomic-embed-text` embeds, hybrid retrieval, no reranking,
+`AGENT_MAX_STEPS=3`. 60 documents (15 chains), 45 questions, each asked twice.
+
+| Endpoint | Tier | Questions | Answer document retrieved | Answer correct | Mean steps |
+|---|---|---|---|---|---|
+| `/query` | 1-hop | 30 | 100% (30/30) | 100% (30/30) | - |
+| `/query` | 2-hop | 30 | 7% (2/30) | 7% (2/30) | - |
+| `/query` | 3-hop | 30 | 13% (4/30) | 0% (0/30) | - |
+| `/agent` | 1-hop | 30 | 100% (30/30) | 100% (30/30) | 1.00 |
+| `/agent` | 2-hop | 30 | 13% (4/30) | 17% (5/30) | 1.13 |
+| `/agent` | 3-hop | 30 | 13% (4/30) | 7% (2/30) | 1.50 |
+
+**The honest reading: with the default model, `/agent` is not meaningfully better
+than `/query` on multi-hop questions.** The 1-hop control is 100% for both, so
+nothing regressed and the harness works. On the multi-hop tiers `/agent` answered 5
+and 2 of 30 correctly against `/query`'s 2 and 0. The two runs repeat the same 15
+questions, so the effective sample is 15, and differences that small are within what
+model nondeterminism produces. **No benefit can be claimed from these numbers.**
+
+The step counts say why. One `/agent` run per multi-hop question, inspected by hand
+(15 questions per tier), shows three separate behaviours:
+
+1. **Most runs stop after one search** - 12 of 15 at 2-hop and 9 of 15 at 3-hop. The
+   planner reads five chunks that do not contain the answer and still replies
+   "answer now". This is the dominant cause.
+2. **When it does search again it sometimes reasons correctly.** For one 3-hop
+   question it took the owner's name out of the first result and searched
+   `manager of <that name>` - genuine multi-hop behaviour - though it then stopped
+   one hop short. Another 3-hop run retrieved the answer document and answered
+   correctly.
+3. **Sometimes it paraphrases the question instead of using the finding**
+   (`email address of owner of Project ...`), which finds nothing new.
+
+So the loop itself works - a scripted planner is exercised in
+`tests/test_agent_loop.py`, and real runs above reached the right document - but
+`llama3.2` is an unreliable planner. **Not measured:** any stronger planner model
+(no hosted-provider key was available for this run), and any tuning of the planner
+prompt, which is the first lever to try. Both are set through `AGENT_PLANNER_MODEL`
+and `PLANNER_PROMPT` in `ragbridge.agent.planner`; re-run this script after either.
+

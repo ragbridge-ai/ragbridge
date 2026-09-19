@@ -79,9 +79,17 @@ Write the loop by hand, in `ragbridge.agent.loop.run_agent`, behind a `Planner`
   of a comparison, answering simple questions directly), but not consistently: the same
   prompt gave a different decision on a second run, and one search repeated the
   question almost verbatim (`support hours`), which wastes a step - harmlessly, since
-  results are de-duplicated by chunk id. This is a 12-call sample of *whether the JSON
-  parses and what it decides*, not a measurement of **answer quality**, which has not
-  been evaluated for `/agent` and should be (Phase 2's RAGAS scripts target `/query`)
-  before anyone claims multi-step retrieval improves answers.
+  results are de-duplicated by chunk id. This was a 12-call sample of *whether the JSON
+  parses and what it decides*, not of answer quality.
+- **Answer quality, measured in Phase 5** (`docs/evaluation.md`): on a synthetic corpus
+  where the answer is reachable only through a chain of documents, `/agent` with the
+  default `llama3.2` planner answered 5 and 2 of 30 questions correctly at two and
+  three hops, against `/query`'s 2 and 0 - **within noise, so no benefit can be
+  claimed.** The cause is the planner: on inspection, most runs (12 of 15 at two hops,
+  9 of 15 at three) stopped after one search, because it judged the first results
+  sufficient. When it did search again it sometimes used a name from the findings
+  correctly, and one three-hop run reached the right document and answered correctly.
+  So the loop works and the default planner is the weak part. Not measured: a stronger
+  planner model, and any tuning of the planner prompt (the first lever to try).
 - Each `/agent` call is independent: there are no sessions or follow-up questions
   (see `docs/plans/phase-4.md`, decision 7).
