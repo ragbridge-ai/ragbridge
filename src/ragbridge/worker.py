@@ -96,3 +96,11 @@ class WorkerSettings:
     on_startup = _on_startup
     on_shutdown = _on_shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
+    health_check_interval = 30
+    """Seconds between the worker's heartbeats, which ``arq --check`` reads.
+
+    arq's default is 3600, and the heartbeat's expiry follows it, so a
+    worker that crashed (as opposed to one that shut down cleanly, which
+    removes its own heartbeat) would still report healthy for up to an
+    hour. 30 seconds makes ``arq --check`` a usable container healthcheck.
+    """
