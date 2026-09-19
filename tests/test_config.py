@@ -90,3 +90,16 @@ def test_the_playground_can_be_disabled_from_the_environment(
     monkeypatch.setenv("ENABLE_PLAYGROUND", "false")
 
     assert Settings(database_url=SHIPPED_URL).enable_playground is False
+
+
+def test_pdf_extraction_defaults_to_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PDF_EXTRACTION", raising=False)
+
+    assert Settings(database_url=SHIPPED_URL).pdf_extraction == "auto"
+
+
+def test_an_unknown_pdf_extraction_mode_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PDF_EXTRACTION", "columns")
+
+    with pytest.raises(ValidationError, match="pdf_extraction"):
+        Settings(database_url=SHIPPED_URL)

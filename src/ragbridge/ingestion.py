@@ -18,17 +18,19 @@ from ragbridge.chunking import chunk_text
 from ragbridge.config import Settings
 from ragbridge.db.models import Chunk, Document
 from ragbridge.embeddings import Embedder
-from ragbridge.pdf import extract_pdf_pages
+from ragbridge.pdf import PdfExtraction, extract_pdf_pages
 
 
-def parse_pages(raw: bytes, content_type: str) -> list[str]:
+def parse_pages(raw: bytes, content_type: str, pdf_extraction: PdfExtraction = "auto") -> list[str]:
     """Extract one string per page from raw uploaded bytes.
+
+    ``pdf_extraction`` is ``Settings.pdf_extraction``; it only matters for PDFs.
 
     Raises ``ValueError`` for a malformed PDF (see ``extract_pdf_pages``)
     or ``UnicodeDecodeError`` for text that is not valid UTF-8.
     """
     if content_type == "application/pdf":
-        return extract_pdf_pages(raw)
+        return extract_pdf_pages(raw, pdf_extraction)
     return [raw.decode("utf-8")]
 
 

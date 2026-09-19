@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     max_upload_size: int = 10_000_000
     """Maximum accepted size, in bytes, of an uploaded document."""
 
+    pdf_extraction: Literal["auto", "plain", "layout"] = "auto"
+    """How PDF pages are read (see ``ragbridge.pdf.extract_pdf_pages``).
+
+    ``auto`` reads each page row by row, so a side column of dates and cities
+    stays beside its text, and keeps pypdf's plain order for pages of two
+    columns of prose. ``plain`` is pypdf's default for every page; ``layout``
+    always reads row by row. Only documents uploaded after a change are
+    affected.
+    """
+
     enable_docs: bool = True
     """Serve the generated API docs at /docs and /openapi.json.
 

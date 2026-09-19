@@ -58,7 +58,7 @@ async def process_document(ctx: JobContext, document_id: str) -> None:
             raw = document.raw_content
             if raw is None:
                 raise ValueError("document has no raw_content to process")
-            pages = parse_pages(raw, document.content_type)
+            pages = parse_pages(raw, document.content_type, settings.pdf_extraction)
             await ingest_document(session, document, pages, settings, embedder, cache)
             document.raw_content = None
         except Exception as error:  # broad on purpose: see docstring
