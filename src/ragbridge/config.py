@@ -1,9 +1,18 @@
 """Application settings, loaded from environment variables."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
+
+SHIPPED_DB_CREDENTIALS = ("ragbridge", "ragbridge")
+"""The username and password in ``.env.example``'s ``DATABASE_URL``.
+
+Convenient locally, and a public host reachable by anyone who has read
+this project's README. ``ENVIRONMENT=production`` refuses them.
+"""
 
 
 class Settings(BaseSettings):
@@ -16,7 +25,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     app_name: str = "ragbridge"
-    environment: str = "development"
+    environment: Literal["development", "production"] = "development"
+    """Which safety checks apply. ``production`` refuses to start with the
+    credentials shipped in ``.env.example`` (see the validator below).
+
+    Typed rather than a free string so a misspelling like ``prod`` fails
+    at startup instead of silently turning every production check off.
+    """
     database_url: str = "postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge"
     max_upload_size: int = 10_000_000
     """Maximum accepted size, in bytes, of an uploaded document."""
@@ -110,6 +125,33 @@ class Settings(BaseSettings):
     output and answering needs good prose, so an installation can point
     this at a stronger model without changing the answering model.
     """
+
+    @model_validator(mode="after")
+    def _reject_shipped_defaults_in_production(self) -> Self:
+        """Refuse to start in production with the credentials from ``.env.example``.
+
+        Documentation that says "change the password" is advice; a
+        process that will not boot with the published one is a
+        guarantee - the same reasoning that put the agent's step ceiling
+        in code rather than in a prompt (decision 3,
+        docs/plans/phase-5.md).
+
+        Deliberately narrow: it rejects the *known shipped* credentials,
+        not everything that looks weak. A passwordless Redis on a private
+        Docker network is a legitimate deployment, and guessing at
+        weakness would block real setups without adding safety.
+        """
+        if self.environment != "production":
+            return self
+
+        url = make_url(self.database_url)
+        if (url.username, url.password) == SHIPPED_DB_CREDENTIALS:
+            raise ValueError(
+                "DATABASE_URL still uses the username and password from .env.example, "
+                "which are public. Set a generated password (for example "
+                "`openssl rand -base64 24`) before running with ENVIRONMENT=production."
+            )
+        return self
 
 
 @lru_cache
