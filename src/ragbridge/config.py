@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     max_upload_size: int = 10_000_000
     """Maximum accepted size, in bytes, of an uploaded document."""
 
+    enable_docs: bool = True
+    """Serve the generated API docs at /docs and /openapi.json.
+
+    A deliberate switch rather than something ``environment`` turns off
+    silently (decision 6, docs/plans/phase-5.md). Every endpoint already
+    requires an API key, so a public docs page exposes the API's shape,
+    not its data - the production Compose file turns it off, and an
+    operator who wants it can keep it.
+    """
+
     embedding_model: str = "ollama/nomic-embed-text"
     """LiteLLM model name used to embed chunks."""
     embedding_dimension: int = 768
