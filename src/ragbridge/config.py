@@ -159,7 +159,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DATABASE_URL still uses the username and password from .env.example, "
                 "which are public. Set a generated password (for example "
-                "`openssl rand -base64 24`) before running with ENVIRONMENT=production."
+                "`openssl rand -hex 24`, which is safe inside a URL) before running "
+                "with ENVIRONMENT=production."
             )
         return self
 
