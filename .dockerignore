@@ -31,3 +31,4 @@ CLAUDE.md
 Dockerfile
 docker-compose*.yml
 Caddyfile
+scripts
