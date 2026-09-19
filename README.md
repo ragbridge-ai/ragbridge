@@ -16,8 +16,8 @@ with a real domain.** See [AGENTS.md](AGENTS.md) for the roadmap and
 [docs/plans/phase-5.md](docs/plans/phase-5.md) for this phase's decisions.
 
 Documentation: [demo](docs/demo.md) (a real run, output included) ·
-[deployment](docs/deployment.md) · [evaluation](docs/evaluation.md) ·
-[decisions (ADRs)](docs/adr/).
+[playground](docs/playground.md) · [deployment](docs/deployment.md) ·
+[evaluation](docs/evaluation.md) · [decisions (ADRs)](docs/adr/).
 
 ## Requirements
 
@@ -64,6 +64,19 @@ uv run arq ragbridge.worker.WorkerSettings
 ```
 
 ## Usage
+
+### Try it in the browser
+
+With the API running, open <http://localhost:8000/playground/>, paste a key from
+`ragbridge-admin` (use a test tenant's), upload your own files, and ask. It shows the
+answer **and** what retrieval did: each source's score, which search found it (vector,
+keyword, or both), and what `/agent` searched for.
+
+![The playground answering a question, with each source's retrieval detail](docs/img/playground-query.png)
+
+It is a development tool, not a product surface: the API below is the product. It is off
+in the production Compose file, and the JavaScript is not run by CI (checked by hand
+instead). Details, limits and a manual checklist: [docs/playground.md](docs/playground.md).
 
 ### Upload a document
 
