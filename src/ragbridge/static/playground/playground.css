@@ -1,6 +1,23 @@
+:root {
+  --text: #1c1d21;
+  --muted: #62666f;
+  --line: #d9dbe0;
+  --panel: #f6f7f9;
+  --accent: #2557d6;
+  --good: #1a7f4b;
+  --bad: #b3261e;
+  --warn: #8a5a00;
+  --untrusted: #b7791f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
   font-family: system-ui, sans-serif;
   line-height: 1.5;
+  color: var(--text);
   max-width: 60rem;
   margin: 2rem auto;
   padding: 0 1rem;
@@ -8,4 +25,238 @@ body {
 
 h1 {
   margin-bottom: 0.25rem;
+}
+
+h2 {
+  margin-top: 2rem;
+  font-size: 1.15rem;
+}
+
+code {
+  background: var(--panel);
+  padding: 0.05rem 0.3rem;
+  border-radius: 3px;
+}
+
+.note {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+input[type="password"],
+input[type="text"],
+input[type="number"],
+select,
+textarea {
+  font: inherit;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+input[type="password"] {
+  flex: 1;
+  min-width: 0;
+}
+
+button {
+  font: inherit;
+  padding: 0.4rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+button[type="submit"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+[role="status"] {
+  min-height: 1.5rem;
+  color: var(--muted);
+}
+
+.error {
+  color: var(--bad);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.status {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.status-ready {
+  color: var(--good);
+}
+
+.status-failed {
+  color: var(--bad);
+}
+
+.status-pending,
+.status-processing {
+  color: var(--warn);
+}
+
+.doc-error {
+  display: block;
+  color: var(--bad);
+  font-size: 0.85rem;
+  font-weight: normal;
+}
+
+#upload-results {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+  font-size: 0.9rem;
+}
+
+#upload-results .error {
+  color: var(--bad);
+}
+
+textarea {
+  width: 100%;
+  margin: 0.25rem 0 0.5rem;
+  resize: vertical;
+}
+
+.options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.options input[type="number"] {
+  width: 4.5rem;
+}
+
+.check {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+/* Two kinds of text on this page are not the page's own: what a model wrote,
+   and what a document said. Each sits in a labelled block that looks different
+   from the interface around it. */
+.block {
+  border-left: 4px solid var(--line);
+  padding: 0.5rem 0.9rem;
+  margin: 1rem 0;
+  background: var(--panel);
+}
+
+.block h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.origin {
+  margin: 0.1rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.block-answer {
+  border-left-color: var(--accent);
+}
+
+.block-source {
+  border-left-color: var(--untrusted);
+  background: #fffaf0;
+}
+
+.answer-text,
+.chunk {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chunk {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85rem;
+  margin: 0.5rem 0 0;
+}
+
+.source-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: baseline;
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+}
+
+.badge {
+  font-size: 0.78rem;
+  padding: 0.05rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: white;
+}
+
+.badge-miss {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.timing {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin: 0 0 0.75rem;
+  padding: 0.4rem 0.75rem 0.6rem;
+}
+
+fieldset .check {
+  margin-top: 0.2rem;
+}
+
+.steps {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
 }

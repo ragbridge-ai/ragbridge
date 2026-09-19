@@ -11,10 +11,97 @@
   <header>
     <h1>ragbridge playground</h1>
     <p>Try the service on your own files, and see what retrieval did.</p>
+    <p class="note">
+      A development tool. Use the key of a <strong>test tenant</strong>: everything you
+      upload here goes to that tenant, and the key stays in this browser tab only.
+    </p>
   </header>
+
   <main>
-    <p id="status">Loading...</p>
+    <section id="key-section">
+      <h2>1. API key</h2>
+      <form id="key-form">
+        <label for="key-input">Key from <code>ragbridge-admin</code></label>
+        <div class="row">
+          <input id="key-input" type="password" autocomplete="off" spellcheck="false" placeholder="rb_...">
+          <button type="submit">Use key</button>
+          <button type="button" id="forget-key" hidden>Forget key</button>
+        </div>
+      </form>
+      <p id="key-status" role="status"></p>
+    </section>
+
+    <section id="documents-section" hidden>
+      <h2>2. Documents</h2>
+      <form id="upload-form">
+        <label for="file-input">Add files (text, Markdown or PDF, up to 10 MB each)</label>
+        <div class="row">
+          <input id="file-input" type="file" multiple accept=".txt,.md,.markdown,.pdf">
+          <button type="submit" id="upload-button">Upload</button>
+        </div>
+      </form>
+      <ul id="upload-results"></ul>
+      <p id="documents-status" role="status"></p>
+      <table id="documents-table" hidden>
+        <thead>
+          <tr><th>File</th><th>Status</th><th>Uploaded</th><th></th></tr>
+        </thead>
+        <tbody id="documents-body"></tbody>
+      </table>
+    </section>
+
+    <section id="ask-section" hidden>
+      <h2>3. Ask</h2>
+      <form id="ask-form">
+        <fieldset>
+          <legend>What to run</legend>
+          <label class="check">
+            <input type="radio" name="endpoint" value="query" checked>
+            Answer with sources (<code>/query</code>)
+          </label>
+          <label class="check">
+            <input type="radio" name="endpoint" value="search">
+            Matching chunks only, no model (<code>/search</code>)
+          </label>
+          <label class="check">
+            <input type="radio" name="endpoint" value="agent">
+            Several searches, then an answer (<code>/agent</code>)
+          </label>
+        </fieldset>
+        <label for="question">Question</label>
+        <textarea id="question" rows="3" placeholder="What does the refund policy say?"></textarea>
+        <div class="options" id="retrieval-options">
+          <label>Chunks to use
+            <input id="top-k" type="number" min="1" max="20" value="5">
+          </label>
+          <label>Retrieval
+            <select id="retrieval-mode">
+              <option value="">server default</option>
+              <option value="hybrid">hybrid</option>
+              <option value="vector">vector only</option>
+              <option value="keyword">keyword only</option>
+            </select>
+          </label>
+          <label class="check">
+            <input id="explain" type="checkbox" checked> Show why each chunk was found
+          </label>
+        </div>
+        <div class="options" id="agent-options" hidden>
+          <label>Most searches
+            <input id="max-steps" type="number" min="1" max="10" value="3">
+          </label>
+          <span class="note">
+            The server sets the real ceiling, and the agent uses the server's retrieval
+            settings. Its answer depends heavily on the chat model (see docs/evaluation.md).
+          </span>
+        </div>
+        <button type="submit" id="ask-button">Ask</button>
+      </form>
+      <p id="ask-status" role="status"></p>
+      <div id="result" aria-live="polite"></div>
+    </section>
   </main>
+
   <script src="playground.js"></script>
 </body>
 </html>
