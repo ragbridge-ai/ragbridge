@@ -41,6 +41,7 @@ framework like LangChain.
 | CI | GitHub Actions |
 | Local infrastructure | Docker Compose |
 | Deployment (Phase 5) | Docker Compose + Caddy on a single Linux host |
+| Playground (Phase 6) | Plain HTML, CSS and JavaScript served by FastAPI; no build step, no npm |
 
 Only add a tool when the current phase needs it. Every important tool choice gets a short
 Architecture Decision Record (ADR) in `docs/adr/`.
@@ -82,6 +83,14 @@ AWS + Terraform was evaluated and dropped - see the plan's decision 1.
 Output: `v1.0.0`.
 See the detailed plan: [docs/plans/phase-5.md](docs/plans/phase-5.md).
 
+### Phase 6 — Playground (after v1.0.0)
+A page at `/playground` for trying the service on your own files and seeing what
+retrieval did: plain HTML, CSS and JavaScript served by the app, off in production
+(`ENABLE_PLAYGROUND`), plus an opt-in `explain` field on `/search` and `/query`. It is a
+development tool, not a product surface: the API stays the product, and the page never
+manages tenants or keys. This reverses Phase 5's "no web UI", see the plan's reasoning.
+See the detailed plan: [docs/plans/phase-6-ui.md](docs/plans/phase-6-ui.md).
+
 ### After v1
 GraphRAG with Neo4j, Qdrant adapter behind the same interface as pgvector, direct MySQL
 sync, and Terraform for a cloud provider (deferred from Phase 5: it cannot be applied,
@@ -101,6 +110,8 @@ ragbridge/
 │   └── api/
 │       ├── __init__.py
 │       └── health.py
+│   ├── playground.py      # serves the playground, with its security headers
+│   └── static/playground/ # index.html, playground.css, playground.js
 ├── tests/
 ├── docker-compose.yml
 ├── pyproject.toml

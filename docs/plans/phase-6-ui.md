@@ -350,3 +350,61 @@ Steps 2-4 get their own detailed breakdown when they are reached, as earlier pha
 
 Written after the phase, so the plan above stays as it was decided and this records where
 building it disagreed.
+
+**Where reality differed from the plan**
+
+- The plan said `/agent` would serialise `retrieval` as `null`. It does not: the endpoints
+  answer with new `Explainable*` models, and `Source`, `QueryResponse` and `SearchResponse`
+  are untouched, so `/agent` and both MCP tools are byte-for-byte what they were. A shared
+  model had first made `search_documents` return two null fields and grow its output
+  schema, and every existing test still passed. Two new tests now pin those MCP schemas.
+- `response_model_exclude_none` was the first attempt at "unchanged unless asked". A test
+  showed it also drops `keyword_rank: null` inside `retrieval`, which means "that arm did
+  not find this chunk". It became `response_model_exclude_unset`, with the fields assigned
+  only when `explain` is true.
+- The cache-key hazard the plan predicted was real, and a second one was not in the plan: a
+  cached answer written without `exclude_unset` came back with null fields a fresh answer
+  does not have. Both directions are tested, and each protection was mutation-checked.
+- The plan promised at most two screenshots. **One** shipped. With a clean four-file corpus
+  `/agent` needed a single search, so its screenshot would have shown a multi-step tool
+  doing one step; that is the Phase 5 lesson again (a tiny corpus makes multi-hop
+  meaningless).
+- The plan estimated 600-900 lines of untyped code. It is 883 (107 HTML, 262 CSS, 514 JS).
+- Beyond the planned guards, tests also check that every id the script looks up exists,
+  that the HTML has no inline styles (the policy blocks them silently), and that the policy
+  contains no `unsafe-inline`, `unsafe-eval` or wildcard.
+- The first hostile-document browser test proved nothing: the payload was in a different
+  chunk than the words the query matched, so it was never retrieved. It was rewritten, and
+  the page then deliberately broken with `innerHTML`: two elements were injected, the guard
+  test failed, and only the CSP kept `document.title` intact.
+- The new production smoke check was run against the real stack, and with the setting
+  flipped to `true` it fails (`want 404, got 200`). That run also showed the page served
+  through Caddy with no proxy change, as the plan claimed.
+- Browser form validation refused a `top_k` of 99 before the server saw it. Correct
+  behaviour, but it meant the server-error path needed a separate check.
+
+**Results**
+
+- The playground answers the question it was built for. Its first use turned up a real
+  retrieval behaviour: the keyword arm **returns nothing for a plain-English question**,
+  because `websearch_to_tsquery` ANDs every stem (`'mani' & 'busi' & 'day' & 'refund' &
+  'take'`), so almost every source shows `keyword: not found`. A short query such as
+  `refund business days` is found by both arms. **Not changed in this phase**; whether to
+  relax it (an OR fallback, or dropping question words) is a retrieval decision with an
+  evaluation to go with it.
+- Prompt injection is visible and not fixed: the model obeyed an injected "reply with
+  PWNED" in one run and not in another.
+- Adding `explain` needed no change to the reranker `Protocol`, the agent loop, or a single
+  existing test, which was the point of leaving `SearchResult` a 3-tuple.
+
+**Still not done - stated, not hidden**
+
+- The JavaScript is not executed in CI. A broken button can reach `main` green; the manual
+  checklist in `docs/playground.md` is the substitute.
+- Verified in Chrome only. Not verified: Firefox, Safari, Windows and Linux file-type
+  behaviour (the page states the type from the extension in case a system reports none for
+  Markdown; that did not reproduce on macOS Chrome), and narrow windows.
+- Nothing about the playground has been run on a real server. It is off in production, and
+  the smoke test proves that.
+- The `explain` fields are unmeasured for cost. They reuse the arms' own result lists and
+  add no query, but that was reasoned from the code, not benchmarked.
