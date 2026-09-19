@@ -33,6 +33,14 @@
 
     <section id="documents-section" hidden>
       <h2>2. Documents</h2>
+      <form id="upload-form">
+        <label for="file-input">Add files (text, Markdown or PDF, up to 10 MB each)</label>
+        <div class="row">
+          <input id="file-input" type="file" multiple accept=".txt,.md,.markdown,.pdf">
+          <button type="submit" id="upload-button">Upload</button>
+        </div>
+      </form>
+      <ul id="upload-results"></ul>
       <p id="documents-status" role="status"></p>
       <table id="documents-table" hidden>
         <thead>

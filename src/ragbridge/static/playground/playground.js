@@ -11,6 +11,18 @@ const KEY_PREFIX_LENGTH = 11; // "rb_" + 8 characters: what the server also show
 const POLL_MS = 2000;
 const STATUSES = ["pending", "processing", "ready", "failed"];
 
+// The API accepts exactly these three content types and refuses anything else,
+// so the page states the type from the file name instead of trusting the one
+// the operating system reports. (Some system and browser combinations report
+// no type at all for Markdown; not reproduced on the macOS Chrome this was
+// developed on, which reports "text/markdown".)
+const CONTENT_TYPES = {
+  txt: "text/plain",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  pdf: "application/pdf",
+};
+
 let apiKey = "";
 let pollTimer = null;
 
@@ -188,6 +200,71 @@ async function deleteDocument(document) {
   await loadDocuments();
 }
 
+// --- uploading ---------------------------------------------------------------
+
+function contentTypeFor(filename) {
+  const dot = filename.lastIndexOf(".");
+  return dot === -1 ? undefined : CONTENT_TYPES[filename.slice(dot + 1).toLowerCase()];
+}
+
+// What the server's status code means for an upload (see POST /documents).
+function describeUpload(status) {
+  if (status === 200) {
+    return "already uploaded (same content, nothing to do)";
+  }
+  if (status === 202) {
+    return "queued: the background worker is processing it";
+  }
+  return "ready";
+}
+
+function addUploadResult(filename, message, isError = false) {
+  byId("upload-results").append(
+    el("li", { className: isError ? "error" : "", text: filename + ": " + message }),
+  );
+}
+
+async function uploadOne(file) {
+  const contentType = contentTypeFor(file.name);
+  if (contentType === undefined) {
+    addUploadResult(file.name, "not a supported file type (use .txt, .md or .pdf)", true);
+    return;
+  }
+  const formData = new FormData();
+  formData.append("file", new Blob([file], { type: contentType }), file.name);
+  try {
+    const { status } = await api("/documents", { method: "POST", formData });
+    addUploadResult(file.name, describeUpload(status));
+  } catch (error) {
+    addUploadResult(file.name, error.message, true);
+  }
+}
+
+async function uploadSelectedFiles() {
+  const input = byId("file-input");
+  const files = Array.from(input.files);
+  byId("upload-results").replaceChildren();
+  if (files.length === 0) {
+    setStatus("documents-status", "Choose at least one file first.", true);
+    return;
+  }
+  byId("upload-button").disabled = true;
+  setStatus("documents-status", "Uploading and embedding...");
+  // One at a time: each upload embeds its chunks with the model, and a laptop
+  // running Ollama does better without several at once.
+  for (const file of files) {
+    await uploadOne(file);
+  }
+  input.value = "";
+  byId("upload-button").disabled = false;
+  await loadDocuments();
+}
+
+byId("upload-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  uploadSelectedFiles();
+});
+
 // --- signing in and out ------------------------------------------------------
 
 function showSignedIn(signedIn) {
@@ -196,6 +273,7 @@ function showSignedIn(signedIn) {
   byId("key-input").value = "";
   if (!signedIn) {
     clearTimeout(pollTimer);
+    byId("upload-results").replaceChildren();
   }
 }
 
