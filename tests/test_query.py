@@ -224,3 +224,118 @@ def test_answer_cache_disabled_by_default_recomputes_every_time(
     response = client.post("/query", json={"question": "Some fact.", "top_k": 5})
 
     assert response.json()["answer"] == "RECOMPUTED"
+
+
+def _client(app: FastAPI, key: str) -> TestClient:
+    return TestClient(app, headers={"Authorization": f"Bearer {key}"})
+
+
+ERROR_CHUNK = "Error code ERR_4021 means the upload exceeded the size limit."
+OTHER_CHUNK = "Cats are independent and curious animals."
+
+
+def _upload_two_chunks(client: TestClient) -> None:
+    client.post("/documents", files={"file": ("errors.txt", ERROR_CHUNK.encode(), "text/plain")})
+    client.post("/documents", files={"file": ("cats.txt", OTHER_CHUNK.encode(), "text/plain")})
+
+
+def test_query_without_explain_has_no_retrieval_fields(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _upload_two_chunks(client)
+
+    body = client.post("/query", json={"question": ERROR_CHUNK}).json()
+
+    assert set(body) == {"answer", "sources"}
+    for source in body["sources"]:
+        assert set(source) == {"document_id", "filename", "chunk_index", "snippet", "score"}
+
+
+def test_query_explain_reports_which_arm_found_each_source(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _upload_two_chunks(client)
+
+    body = client.post("/query", json={"question": ERROR_CHUNK, "explain": True}).json()
+
+    error_source, cats_source = body["sources"]
+    assert error_source["retrieval"] == {
+        "vector_rank": 1,
+        "keyword_rank": 1,
+        "fused_score": pytest.approx(1 / 61 + 1 / 61),
+        "rank_before_rerank": 1,
+    }
+    assert cats_source["retrieval"]["keyword_rank"] is None
+    assert cats_source["retrieval"]["vector_rank"] == 2
+    # The rest of the response is exactly what it is without explain.
+    assert error_source["score"] == pytest.approx(1 / 61 + 1 / 61)
+    assert body["answer"] == "Fake answer using 2 chunk(s)."
+
+
+def test_query_explain_shows_what_reranking_changed(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    app_with_database.dependency_overrides[get_reranker] = lambda: FakeReranker()
+    client = _client(app_with_database, tenant_with_key)
+    _upload_two_chunks(client)
+
+    body = client.post("/query", json={"question": ERROR_CHUNK, "explain": True}).json()
+
+    assert [source["snippet"] for source in body["sources"]] == [OTHER_CHUNK, ERROR_CHUNK]
+    assert [source["retrieval"]["rank_before_rerank"] for source in body["sources"]] == [2, 1]
+
+
+def test_query_explain_does_not_leak_another_tenants_chunks(
+    app_with_database: FastAPI, tenant_with_key: str, second_tenant_with_key: str
+) -> None:
+    _upload_two_chunks(_client(app_with_database, tenant_with_key))
+
+    body = (
+        _client(app_with_database, second_tenant_with_key)
+        .post("/query", json={"question": ERROR_CHUNK, "explain": True})
+        .json()
+    )
+
+    assert body["sources"] == []
+
+
+def test_answer_cache_keeps_explained_and_plain_answers_apart(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """Whichever request comes first must not decide what the other one gets."""
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        answer_cache_enabled=True
+    )
+    client = _client(app_with_database, tenant_with_key)
+    _upload_two_chunks(client)
+    plain_request = {"question": ERROR_CHUNK}
+    explain_request = {"question": ERROR_CHUNK, "explain": True}
+
+    client.post("/query", json=plain_request)
+    explained = client.post("/query", json=explain_request).json()
+    assert "retrieval" in explained["sources"][0]
+
+    # And the other way round, on a question nobody has asked yet.
+    other_explain = {"question": OTHER_CHUNK, "explain": True}
+    other_plain = {"question": OTHER_CHUNK}
+    client.post("/query", json=other_explain)
+    plain = client.post("/query", json=other_plain).json()
+    assert "retrieval" not in plain["sources"][0]
+
+
+def test_a_cached_explained_answer_matches_the_fresh_one(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """A cache hit must keep the ``null`` ranks, and a plain one must not grow them."""
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        answer_cache_enabled=True
+    )
+    client = _client(app_with_database, tenant_with_key)
+    _upload_two_chunks(client)
+
+    for request in ({"question": ERROR_CHUNK, "explain": True}, {"question": ERROR_CHUNK}):
+        fresh = client.post("/query", json=request)
+        cached = client.post("/query", json=request)
+        assert cached.json() == fresh.json()

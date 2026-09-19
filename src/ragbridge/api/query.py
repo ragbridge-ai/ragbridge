@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge import tracing
+from ragbridge.api.explain import RetrievalInfo, build_retrieval_info
 from ragbridge.auth import get_tenant
 from ragbridge.cache import Cache, get_cache
 from ragbridge.chat import Chatter, get_chatter
@@ -17,7 +18,7 @@ from ragbridge.db.models import Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.rerank import Reranker, get_reranker
-from ragbridge.retrieval import hybrid_search
+from ragbridge.retrieval import hybrid_search_with_provenance
 
 router = APIRouter(tags=["query"])
 
@@ -29,6 +30,8 @@ class QueryRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
     mode: Literal["hybrid", "vector", "keyword"] | None = None
     """Which retrieval arm(s) to use. Defaults to settings.retrieval_mode."""
+    explain: bool = False
+    """Add a ``retrieval`` object to each source: which arm found it, and where."""
 
 
 class Source(BaseModel):
@@ -40,11 +43,28 @@ class Source(BaseModel):
 
 
 class QueryResponse(BaseModel):
+    """The plain response, used by MCP and ``RagbridgeClient``.
+
+    The endpoint itself answers with ``ExplainableQueryResponse``, so the
+    MCP ``ask`` tool's output schema does not change when ``explain`` is
+    added - the same split as ``ragbridge.api.search``.
+    """
+
     answer: str
     sources: list[Source]
 
 
-@router.post("/query", response_model=QueryResponse)
+class ExplainableSource(Source):
+    retrieval: RetrievalInfo | None = None
+    """Only present when the request asked for ``explain``."""
+
+
+class ExplainableQueryResponse(BaseModel):
+    answer: str
+    sources: list[ExplainableSource]
+
+
+@router.post("/query", response_model=ExplainableQueryResponse, response_model_exclude_unset=True)
 async def answer_query(
     request: QueryRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
@@ -54,7 +74,7 @@ async def answer_query(
     reranker: Annotated[Reranker, Depends(get_reranker)],
     settings: Annotated[Settings, Depends(get_settings)],
     cache: Annotated[Cache, Depends(get_cache)],
-) -> QueryResponse:
+) -> ExplainableQueryResponse:
     """Embed the question, retrieve and rerank chunks, and answer from them.
 
     When ``settings.answer_cache_enabled``, the whole response is cached
@@ -72,24 +92,30 @@ async def answer_query(
     appearing as an unrelated top-level trace - retrieval itself is not
     an LLM call and would otherwise never appear in a trace at all
     (decision 8, docs/plans/phase-3.md).
+
+    ``explain`` is part of the cache key: an answer cached without it
+    must not be served to a request that asked for the retrieval detail,
+    nor the reverse. With ``explain`` each source also says which arm
+    found it (see ``ragbridge.api.search`` for why those fields are unset,
+    not ``None``, otherwise).
     """
     cache_key: str | None = None
     if settings.answer_cache_enabled:
         corpus_version = await cache.get(f"corpus_version:{tenant.id}") or "0"
         request_digest = hashlib.sha256(
-            f"{request.question}|{request.mode}|{request.top_k}".encode()
+            f"{request.question}|{request.mode}|{request.top_k}|{request.explain}".encode()
         ).hexdigest()
         cache_key = f"answer:{tenant.id}:{corpus_version}:{request_digest}"
         cached = await cache.get(cache_key)
         if cached is not None:
-            return QueryResponse.model_validate_json(cached)
+            return ExplainableQueryResponse.model_validate_json(cached)
 
     with tracing.span(
         settings, "query", question=request.question, mode=request.mode, top_k=request.top_k
     ) as span:
         [question_embedding] = await embedder.embed([request.question])
 
-        candidates = await hybrid_search(
+        candidates, provenance = await hybrid_search_with_provenance(
             session,
             question_embedding,
             request.question,
@@ -101,7 +127,7 @@ async def answer_query(
 
         answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
         sources = [
-            Source(
+            ExplainableSource(
                 document_id=document.id,
                 filename=document.filename,
                 chunk_index=chunk.chunk_index,
@@ -110,10 +136,15 @@ async def answer_query(
             )
             for chunk, document, score in rows
         ]
-        response = QueryResponse(answer=answer, sources=sources)
-        span.update(output=response.model_dump())
+        if request.explain:
+            for source, (chunk, _, _) in zip(sources, rows, strict=True):
+                source.retrieval = build_retrieval_info(candidates, provenance, chunk.id)
+        response = ExplainableQueryResponse(answer=answer, sources=sources)
+        span.update(output=response.model_dump(exclude_unset=True))
 
     if cache_key is not None:
-        await cache.set(cache_key, response.model_dump_json(), ttl=settings.answer_cache_ttl)
+        await cache.set(
+            cache_key, response.model_dump_json(exclude_unset=True), ttl=settings.answer_cache_ttl
+        )
 
     return response

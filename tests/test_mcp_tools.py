@@ -128,3 +128,20 @@ def test_search_documents_output_schema_has_no_retrieval_detail() -> None:
     hit_fields = set(tool.output_schema["$defs"]["SearchHit"]["properties"])
     assert hit_fields == {"document_id", "filename", "chunk_index", "content", "score"}
     assert set(tool.output_schema["properties"]) == {"results"}
+
+
+def test_ask_output_schema_has_no_retrieval_detail() -> None:
+    """The same guard as for ``search_documents``: ``explain`` on POST /query
+    must not add fields to the ``ask`` tool's sources.
+    """
+
+    async def run() -> Any:
+        server = build_mcp_server(lambda ctx: RagbridgeClient(httpx.AsyncClient()))
+        async with Client(server) as client:
+            return await client.list_tools()
+
+    [tool] = [t for t in asyncio.run(run()).tools if t.name == "ask"]
+
+    assert tool.output_schema is not None
+    source_fields = set(tool.output_schema["$defs"]["Source"]["properties"])
+    assert source_fields == {"document_id", "filename", "chunk_index", "snippet", "score"}
