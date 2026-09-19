@@ -2,6 +2,7 @@
 
 import asyncio
 import uuid
+from typing import Literal
 
 import pytest
 from fastapi import FastAPI
@@ -13,7 +14,15 @@ from ragbridge.auth import hash_api_key
 from ragbridge.config import get_settings
 from ragbridge.db.models import ApiKey, Chunk, Document
 from ragbridge.embeddings import FakeEmbedder
-from ragbridge.retrieval import SearchResult, keyword_search, reciprocal_rank_fusion, vector_search
+from ragbridge.retrieval import (
+    ChunkProvenance,
+    SearchResult,
+    hybrid_search,
+    hybrid_search_with_provenance,
+    keyword_search,
+    reciprocal_rank_fusion,
+    vector_search,
+)
 
 
 async def _tenant_id_for_key(
@@ -168,3 +177,119 @@ def test_reciprocal_rank_fusion_includes_items_found_by_only_one_arm() -> None:
 
 def test_reciprocal_rank_fusion_of_no_rankings_returns_empty_list() -> None:
     assert reciprocal_rank_fusion([]) == []
+
+
+ERROR_CHUNK = "Error code ERR_4021 means the upload exceeded the size limit."
+OTHER_CHUNK = "Cats are independent and curious animals."
+
+
+def _provenance_for(
+    app: FastAPI, key: str, query: str, mode: Literal["hybrid", "vector", "keyword"]
+) -> tuple[list[SearchResult], dict[uuid.UUID, ChunkProvenance]]:
+    """Upload the two fixed chunks, then run ``hybrid_search_with_provenance`` on ``query``."""
+    client = TestClient(app, headers={"Authorization": f"Bearer {key}"})
+    client.post("/documents", files={"file": ("errors.txt", ERROR_CHUNK.encode(), "text/plain")})
+    client.post("/documents", files={"file": ("cats.txt", OTHER_CHUNK.encode(), "text/plain")})
+
+    async def run() -> tuple[list[SearchResult], dict[uuid.UUID, ChunkProvenance]]:
+        session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+        tenant_id = await _tenant_id_for_key(session_factory, key)
+        [embedding] = await FakeEmbedder(get_settings().embedding_dimension).embed([query])
+        async with session_factory() as session:
+            return await hybrid_search_with_provenance(
+                session, embedding, query, mode=mode, candidates=10, tenant_id=tenant_id
+            )
+
+    return asyncio.run(run())
+
+
+def test_provenance_records_both_ranks_for_a_chunk_both_arms_found(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """FakeEmbedder gives identical text an identical vector, so querying the
+    exact chunk text makes it the nearest by embedding *and* the only
+    keyword match: rank 1 in both arms, fused score 1/61 + 1/61.
+    """
+    rows, provenance = _provenance_for(
+        app_with_database, tenant_with_key, ERROR_CHUNK, mode="hybrid"
+    )
+
+    [error_row] = [row for row in rows if row[0].content == ERROR_CHUNK]
+    found = provenance[error_row[0].id]
+    assert found.vector_rank == 1
+    assert found.keyword_rank == 1
+    assert found.fused_score == pytest.approx(1 / 61 + 1 / 61)
+
+
+def test_provenance_leaves_the_keyword_rank_empty_for_a_vector_only_chunk(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """The cats chunk shares no term with the query, so only the vector arm
+    (which returns every chunk, however far) can have found it.
+    """
+    rows, provenance = _provenance_for(
+        app_with_database, tenant_with_key, ERROR_CHUNK, mode="hybrid"
+    )
+
+    [cats_row] = [row for row in rows if row[0].content == OTHER_CHUNK]
+    found = provenance[cats_row[0].id]
+    assert found.keyword_rank is None
+    assert found.vector_rank == 2
+
+
+def test_provenance_scores_and_order_match_reciprocal_rank_fusion(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    rows, provenance = _provenance_for(
+        app_with_database, tenant_with_key, ERROR_CHUNK, mode="hybrid"
+    )
+
+    assert set(provenance) == {chunk.id for chunk, _, _ in rows}
+    assert [provenance[chunk.id].fused_score for chunk, _, _ in rows] == [
+        score for _, _, score in rows
+    ]
+
+
+def test_provenance_in_vector_mode_has_no_keyword_ranks(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    rows, provenance = _provenance_for(
+        app_with_database, tenant_with_key, ERROR_CHUNK, mode="vector"
+    )
+
+    assert [provenance[chunk.id].vector_rank for chunk, _, _ in rows] == [1, 2]
+    assert all(found.keyword_rank is None for found in provenance.values())
+    assert provenance[rows[0][0].id].fused_score == rows[0][2] == 1.0
+
+
+def test_provenance_in_keyword_mode_has_no_vector_ranks(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    rows, provenance = _provenance_for(
+        app_with_database, tenant_with_key, "ERR_4021", mode="keyword"
+    )
+
+    assert [provenance[chunk.id].keyword_rank for chunk, _, _ in rows] == [1]
+    assert all(found.vector_rank is None for found in provenance.values())
+
+
+def test_hybrid_search_returns_the_same_rows_as_the_provenance_version(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """``hybrid_search`` is now a wrapper; its callers must see no difference."""
+    with_provenance, _ = _provenance_for(
+        app_with_database, tenant_with_key, ERROR_CHUNK, mode="hybrid"
+    )
+
+    async def plain() -> list[SearchResult]:
+        session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+        tenant_id = await _tenant_id_for_key(session_factory, tenant_with_key)
+        [embedding] = await FakeEmbedder(get_settings().embedding_dimension).embed([ERROR_CHUNK])
+        async with session_factory() as session:
+            return await hybrid_search(
+                session, embedding, ERROR_CHUNK, mode="hybrid", candidates=10, tenant_id=tenant_id
+            )
+
+    assert [(c.id, score) for c, _, score in asyncio.run(plain())] == [
+        (c.id, score) for c, _, score in with_provenance
+    ]
