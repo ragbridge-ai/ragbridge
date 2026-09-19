@@ -1,7 +1,8 @@
 """Checks that migrations were applied to the database.
 
-Assumes `alembic upgrade head` has already run against whatever database
-DATABASE_URL points at - see the README and the CI workflow.
+The session fixture in conftest.py creates the ``<name>_test`` database and runs
+`alembic upgrade head` against it before any test runs, so this checks that the
+migrations actually produced what the app needs.
 """
 
 import asyncio

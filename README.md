@@ -292,8 +292,12 @@ uv run mypy                # type check
 scripts/smoke-prod.sh       # build and smoke-test the production stack (needs Docker)
 ```
 
-Tests run against a real PostgreSQL with pgvector (`docker compose up -d postgres`)
-and never call a real embedding provider, chat provider, queue, cache, or tracing
+Tests run against a real PostgreSQL with pgvector (`docker compose up -d postgres`),
+in a **separate database**: `DATABASE_URL`'s database name plus `_test` (so `ragbridge`
+becomes `ragbridge_test`), created and migrated automatically on the first run. The suite
+empties every table before each test, so it refuses to run against any database whose name
+does not end in `_test` - **your development data is never touched.** Tests never call a
+real embedding provider, chat provider, queue, cache, or tracing
 backend - see decision 5 in [docs/plans/phase-1.md](docs/plans/phase-1.md).
 
 ## License
