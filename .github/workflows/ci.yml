@@ -53,3 +53,17 @@ jobs:
 
       - name: Run tests
         run: uv run pytest
+
+  deployment:
+    # Builds the image and starts the production Compose stack, then checks
+    # what it exists to guarantee (TLS proxy, no published database ports,
+    # secrets required, non-root, docs off, upload limit). No language model
+    # is involved - see scripts/smoke-prod.sh.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Smoke-test the production stack
+        run: scripts/smoke-prod.sh
