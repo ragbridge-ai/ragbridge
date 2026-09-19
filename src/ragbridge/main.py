@@ -14,6 +14,7 @@ from ragbridge.api.search import router as search_router
 from ragbridge.config import get_settings
 from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.mcp_server.http import mount_mcp
+from ragbridge.playground import mount_playground
 
 
 @asynccontextmanager
@@ -60,6 +61,8 @@ def create_app() -> FastAPI:
     app.include_router(agent_router)
     app.include_router(search_router)
     app.state.mcp_server = mount_mcp(app)
+    if settings.enable_playground:
+        mount_playground(app)
     return app
 
 
