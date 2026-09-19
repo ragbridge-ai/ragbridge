@@ -99,6 +99,54 @@ see [ADR 0003](docs/adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pas
 instead of `RETRIEVAL_MODE`'s default. Only documents belonging to the calling
 tenant's key are ever searched.
 
+### See why a chunk was found
+
+Add `"explain": true` to a `/query` or `/search` request to get, for every returned
+chunk, how retrieval found it:
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "refund policy", "top_k": 2, "explain": true}'
+```
+
+Each result gains a `retrieval` object, and the response gains `candidate_count` (how
+many chunks were found before reranking narrowed them to `top_k`). The scores below are
+illustrative:
+
+```json
+{
+  "results": [
+    {
+      "filename": "policy.md",
+      "content": "...",
+      "score": 0.0323,
+      "retrieval": {
+        "vector_rank": 1,
+        "keyword_rank": 3,
+        "fused_score": 0.0323,
+        "rank_before_rerank": 1
+      }
+    }
+  ],
+  "candidate_count": 12
+}
+```
+
+- `vector_rank` and `keyword_rank` are the chunk's 1-based position in each retrieval arm.
+  **`null` means that arm did not find the chunk at all** - for example, a chunk with
+  none of the question's words has no `keyword_rank`.
+- `fused_score` is the score retrieval gave the chunk before reranking: the merged score
+  in `hybrid` mode, that arm's own score in `vector` or `keyword` mode. With reranking
+  off, it equals `score`.
+- `rank_before_rerank` is the chunk's position before the reranker ran. When it always
+  equals the chunk's position in the results, reranking is off (the default).
+
+Without `explain` the response is exactly what it was before. `/agent` and the MCP tools
+do not offer it: the agent merges chunks found by several searches, so a single arm's
+rank has no clear meaning there.
+
 ### Search without generating an answer
 
 ```bash

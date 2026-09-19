@@ -8,6 +8,7 @@ function ``POST /query`` calls.
 
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Literal
 
 from sqlalchemy import func, select, text
@@ -22,6 +23,24 @@ Higher is always better, for both arms - callers never need to know which
 arm a score came from to compare it, even though the two arms compute a
 score on entirely different scales (cosine similarity vs. ``ts_rank``).
 """
+
+
+@dataclass(frozen=True)
+class ChunkProvenance:
+    """How one chunk got into the candidate set: which arm found it, and where.
+
+    Kept beside ``SearchResult`` rather than inside it: ``SearchResult`` is
+    a bare 3-tuple that the reranker and the agent loop read by position
+    (decision 8, docs/plans/phase-6-ui.md), and widening it would rewrite
+    all of them for a debugging field.
+    """
+
+    vector_rank: int | None
+    """1-based position in the vector arm's results; ``None`` if it did not find the chunk."""
+    keyword_rank: int | None
+    """1-based position in the keyword arm's results; ``None`` if it did not find the chunk."""
+    fused_score: float
+    """The score retrieval returned: an RRF score in "hybrid" mode, else the arm's own score."""
 
 
 async def vector_search(
@@ -111,7 +130,7 @@ def reciprocal_rank_fusion(
     return merged
 
 
-async def hybrid_search(
+async def hybrid_search_with_provenance(
     session: AsyncSession,
     embedding: list[float],
     query: str,
@@ -119,7 +138,7 @@ async def hybrid_search(
     mode: Literal["hybrid", "vector", "keyword"],
     candidates: int,
     tenant_id: uuid.UUID,
-) -> list[SearchResult]:
+) -> tuple[list[SearchResult], dict[uuid.UUID, ChunkProvenance]]:
     """Retrieve up to ``candidates`` of ``tenant_id``'s chunks for a question, using ``mode``.
 
     Returns up to ``candidates`` rows, not ``top_k``: narrowing the
@@ -135,12 +154,57 @@ async def hybrid_search(
     session can only have one query in flight at a time - the same rule
     as a single database connection, which is exactly what a session
     wraps. "vector" or "keyword" runs only that one arm.
+
+    The second return value says, for every returned chunk, which arm
+    found it and at what rank (``ChunkProvenance``). It is computed from
+    the arms' own result lists, so it costs no extra query.
     """
     if mode == "vector":
-        return await vector_search(session, embedding, candidates, tenant_id=tenant_id)
+        rows = await vector_search(session, embedding, candidates, tenant_id=tenant_id)
+        vector_ranks = _ranks(rows)
+        return rows, {
+            chunk.id: ChunkProvenance(vector_ranks[chunk.id], None, score)
+            for chunk, _, score in rows
+        }
     if mode == "keyword":
-        return await keyword_search(session, query, candidates, tenant_id=tenant_id)
+        rows = await keyword_search(session, query, candidates, tenant_id=tenant_id)
+        keyword_ranks = _ranks(rows)
+        return rows, {
+            chunk.id: ChunkProvenance(None, keyword_ranks[chunk.id], score)
+            for chunk, _, score in rows
+        }
 
     vector_rows = await vector_search(session, embedding, candidates, tenant_id=tenant_id)
     keyword_rows = await keyword_search(session, query, candidates, tenant_id=tenant_id)
-    return reciprocal_rank_fusion([vector_rows, keyword_rows])
+    fused = reciprocal_rank_fusion([vector_rows, keyword_rows])
+    vector_ranks = _ranks(vector_rows)
+    keyword_ranks = _ranks(keyword_rows)
+    return fused, {
+        chunk.id: ChunkProvenance(vector_ranks.get(chunk.id), keyword_ranks.get(chunk.id), score)
+        for chunk, _, score in fused
+    }
+
+
+async def hybrid_search(
+    session: AsyncSession,
+    embedding: list[float],
+    query: str,
+    *,
+    mode: Literal["hybrid", "vector", "keyword"],
+    candidates: int,
+    tenant_id: uuid.UUID,
+) -> list[SearchResult]:
+    """Retrieve up to ``candidates`` chunks for a question, using ``mode``.
+
+    The same retrieval as ``hybrid_search_with_provenance``, without the
+    provenance. Every caller that does not need to explain itself uses this.
+    """
+    rows, _ = await hybrid_search_with_provenance(
+        session, embedding, query, mode=mode, candidates=candidates, tenant_id=tenant_id
+    )
+    return rows
+
+
+def _ranks(rows: Sequence[SearchResult]) -> dict[uuid.UUID, int]:
+    """Map each chunk id to its 1-based position in ``rows``."""
+    return {chunk.id: rank for rank, (chunk, _, _) in enumerate(rows, start=1)}
