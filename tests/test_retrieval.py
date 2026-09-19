@@ -19,6 +19,7 @@ from ragbridge.retrieval import (
     SearchResult,
     hybrid_search,
     hybrid_search_with_provenance,
+    keyword_query,
     keyword_search,
     reciprocal_rank_fusion,
     vector_search,
@@ -293,3 +294,114 @@ def test_hybrid_search_returns_the_same_rows_as_the_provenance_version(
     assert [(c.id, score) for c, _, score in asyncio.run(plain())] == [
         (c.id, score) for c, _, score in with_provenance
     ]
+
+
+# --- natural-language questions in the keyword arm ---------------------------------
+
+
+@pytest.mark.parametrize(
+    "query", ["ERR_4021", "refund policy", "Company B search", "shipping takes long"]
+)
+def test_short_queries_reach_the_keyword_arm_unchanged(query: str) -> None:
+    """Under four words, every word still has to match: the precise behaviour
+    that made an error code findable in the first place.
+    """
+    assert keyword_query(query) == query
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        '"refund policy" for damaged items in transit',
+        "refund or return policy for damaged items",
+        "refund policy for damaged items -shipping",
+    ],
+)
+def test_explicit_queries_are_never_rewritten(query: str) -> None:
+    """A quoted phrase, ``or`` and ``-word`` are the person asking for precision."""
+    assert keyword_query(query) == query
+
+
+def test_a_long_question_becomes_an_or_of_its_words() -> None:
+    question = "Where did the engineer work at Company B, when did that job start?"
+
+    rewritten = keyword_query(question)
+
+    assert rewritten == (
+        "Where or did or the or engineer or work or at or Company or B or when or did or that"
+        " or job or start"
+    )
+
+
+def test_a_long_question_keeps_identifiers_whole() -> None:
+    assert "ERR_4021" in keyword_query("Why does the server say ERR_4021 when my upload is big?")
+
+
+LONG_QUESTION = "How are invoices reconciled, and are refunds for damaged parcels approved quickly?"
+INVOICE_CHUNK = "Invoices are reconciled automatically every month by the billing service."
+REFUND_CHUNK = "Refunds for damaged parcels are approved within five days."
+
+
+def _upload(client: TestClient, name: str, text: str) -> None:
+    client.post("/documents", files={"file": (name, text.encode(), "text/plain")})
+
+
+def _keyword_contents(app: FastAPI, key: str, query: str) -> list[str]:
+    async def run() -> list[str]:
+        session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+        tenant_id = await _tenant_id_for_key(session_factory, key)
+        async with session_factory() as session:
+            rows = await keyword_search(session, query, limit=10, tenant_id=tenant_id)
+        return [chunk.content for chunk, _, _ in rows]
+
+    return asyncio.run(run())
+
+
+def test_a_question_spread_over_two_chunks_finds_both_in_the_keyword_arm(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """No chunk holds every word of the question, so the old every-word-must-match
+    query returned nothing and hybrid search quietly became vector-only.
+    """
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    _upload(client, "invoices.txt", INVOICE_CHUNK)
+    _upload(client, "refunds.txt", REFUND_CHUNK)
+
+    found = _keyword_contents(app_with_database, tenant_with_key, LONG_QUESTION)
+
+    assert set(found) == {INVOICE_CHUNK, REFUND_CHUNK}
+
+
+def test_a_short_query_still_requires_every_word(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """The same two chunks, a short query: no chunk has both words, so still nothing."""
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    _upload(client, "invoices.txt", INVOICE_CHUNK)
+    _upload(client, "refunds.txt", REFUND_CHUNK)
+
+    assert _keyword_contents(app_with_database, tenant_with_key, "invoices parcels") == []
+
+
+def test_a_chunk_found_by_both_arms_outscores_any_single_arm_chunk(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """The question has words the chunk lacks ("server", "say", "big"), so it
+    used to reach the keyword arm as a query nothing matched.
+    """
+    question = "Why does the server say error code ERR_4021 when my upload is too big?"
+
+    rows, provenance = _provenance_for(app_with_database, tenant_with_key, question, mode="hybrid")
+
+    [error_row] = [row for row in rows if row[0].content == ERROR_CHUNK]
+    found = provenance[error_row[0].id]
+    assert found.keyword_rank == 1
+    assert found.vector_rank is not None
+    single_arm = [
+        p.fused_score
+        for p in provenance.values()
+        if (p.vector_rank is None) != (p.keyword_rank is None)
+    ]
+    assert single_arm, "the other chunk should be found by one arm only"
+    assert found.fused_score > max(single_arm)
+    assert found.fused_score > 1 / 61

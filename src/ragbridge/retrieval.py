@@ -6,6 +6,7 @@ results, and ``hybrid_search`` ties everything together into the one
 function ``POST /query`` calls.
 """
 
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -76,6 +77,45 @@ async def vector_search(
     return [(chunk, document, 1 - distance) for chunk, document, distance in result.all()]
 
 
+NATURAL_LANGUAGE_MIN_WORDS = 4
+"""From this many words on, an unmarked query is treated as a question.
+
+Shorter queries ("ERR_4021", "refund policy") are keywords, and every one of
+them has to match: that precision is what makes an exact token findable.
+"""
+
+_WORD = re.compile(r"\w+")
+_EXPLICIT_SYNTAX = re.compile(r'"|\bor\b|(?:^|\s)-\S', re.IGNORECASE)
+
+
+def keyword_query(query: str) -> str:
+    """Return the text ``keyword_search`` hands to ``websearch_to_tsquery``.
+
+    ``websearch_to_tsquery`` requires *every* word of a query to be in one
+    chunk. That suits a keyword, but a long natural-language question always
+    contains words the answer does not (``work``, ``job``, ``start``): no
+    chunk matches, the keyword arm returns nothing, and hybrid search
+    silently becomes vector-only.
+
+    So a query of ``NATURAL_LANGUAGE_MIN_WORDS`` or more words is rewritten
+    as an OR of its words, which ``ts_rank`` then ranks by how many of them
+    a chunk contains. Left exactly as typed: short queries, and anything
+    with a quoted phrase, ``or`` or ``-word`` - the person asking for a
+    specific behaviour.
+
+    The rewrite uses ``websearch_to_tsquery``'s own ``or``, so stopwords
+    and stemming are still handled by PostgreSQL. ``ts_rank`` does not know
+    how common a word is, so a common word adds some noise; reciprocal rank
+    fusion with the vector arm keeps that from deciding the result.
+    """
+    if _EXPLICIT_SYNTAX.search(query):
+        return query
+    words = _WORD.findall(query)
+    if len(words) < NATURAL_LANGUAGE_MIN_WORDS:
+        return query
+    return " or ".join(words)
+
+
 async def keyword_search(
     session: AsyncSession, query: str, limit: int, *, tenant_id: uuid.UUID
 ) -> list[SearchResult]:
@@ -83,13 +123,15 @@ async def keyword_search(
 
     Uses ``websearch_to_tsquery``, the parser built for text a user actually
     types (bare words, ``"quoted phrases"``, ``or``, ``-excluded``) - unlike
-    ``to_tsquery`` it never raises on a plain sentence. Score is
+    ``to_tsquery`` it never raises on a plain sentence. The query text goes
+    through ``keyword_query`` first, so a long question matches chunks that
+    hold *some* of its words instead of none. Score is
     ``ts_rank``, PostgreSQL's own relevance measure for a tsquery match
     against a tsvector. The GIN index behind ``@@`` is an exact match, not
     an approximation, so - unlike ``vector_search`` - adding a tenant
     filter here needs no special handling to stay correct.
     """
-    tsquery = func.websearch_to_tsquery("english", query)
+    tsquery = func.websearch_to_tsquery("english", keyword_query(query))
     rank = func.ts_rank(Chunk.content_tsv, tsquery).label("rank")
     result = await session.execute(
         select(Chunk, Document, rank)
