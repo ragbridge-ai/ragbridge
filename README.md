@@ -126,10 +126,16 @@ fewer searches, never more than the server allows.
 The planner must reply with a small JSON object. **If it cannot** - a reply that is not
 valid JSON, names an unknown action, or asks to search for nothing - the agent answers
 with what it has found so far, so `/agent` degrades to `/query` behaviour instead of
-failing ([ADR 0006](docs/adr/0006-hand-rolled-agent-loop-instead-of-langgraph.md)). In a
-small check with the default `llama3.2`, all 12 planner replies parsed, but its
-decisions varied between runs and answer quality with `/agent` has not been evaluated.
-A stronger planner model can be set with `AGENT_PLANNER_MODEL`.
+failing ([ADR 0006](docs/adr/0006-hand-rolled-agent-loop-instead-of-langgraph.md)).
+
+**Measured, and worth knowing before you rely on it:** with the default `llama3.2` as
+planner, `/agent` is *not* meaningfully better than `/query` on questions that need
+several searches. On a test built for that (answers that can only be found through a
+chain of documents), it answered 5 and 2 of 30 correctly at two and three hops against
+`/query`'s 2 and 0 - within noise - because the planner usually decided one search was
+enough. The loop itself works; the default planner is the weak part. A stronger model
+via `AGENT_PLANNER_MODEL` was not tested. Full method, numbers and caveats:
+[docs/evaluation.md](docs/evaluation.md).
 Each call is independent; there are no sessions or follow-up questions.
 
 ### List, fetch, and delete documents
