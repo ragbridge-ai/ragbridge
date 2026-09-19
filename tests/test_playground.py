@@ -212,3 +212,15 @@ def test_the_guard_notices_a_forbidden_call() -> None:
 
     assert re.search(FORBIDDEN_IN_JAVASCRIPT[0], code) is not None
     assert "only a comment" not in code
+
+
+def test_every_element_the_javascript_looks_up_exists_in_the_page() -> None:
+    """``byId("...")`` throws when the element is missing, which a browser-less
+    CI would never see: a renamed id would ship as a blank page.
+    """
+    html_ids = set(re.findall(r'\bid="([^"]+)"', (PLAYGROUND_DIR / "index.html").read_text()))
+    code = _code_only((PLAYGROUND_DIR / "playground.js").read_text())
+    used_ids = set(re.findall(r'\b(?:byId|setStatus)\(\s*"([^"]+)"', code))
+
+    assert used_ids, "the script should look elements up by id"
+    assert used_ids - html_ids == set()

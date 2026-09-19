@@ -11,10 +11,38 @@
   <header>
     <h1>ragbridge playground</h1>
     <p>Try the service on your own files, and see what retrieval did.</p>
+    <p class="note">
+      A development tool. Use the key of a <strong>test tenant</strong>: everything you
+      upload here goes to that tenant, and the key stays in this browser tab only.
+    </p>
   </header>
+
   <main>
-    <p id="status">Loading...</p>
+    <section id="key-section">
+      <h2>1. API key</h2>
+      <form id="key-form">
+        <label for="key-input">Key from <code>ragbridge-admin</code></label>
+        <div class="row">
+          <input id="key-input" type="password" autocomplete="off" spellcheck="false" placeholder="rb_...">
+          <button type="submit">Use key</button>
+          <button type="button" id="forget-key" hidden>Forget key</button>
+        </div>
+      </form>
+      <p id="key-status" role="status"></p>
+    </section>
+
+    <section id="documents-section" hidden>
+      <h2>2. Documents</h2>
+      <p id="documents-status" role="status"></p>
+      <table id="documents-table" hidden>
+        <thead>
+          <tr><th>File</th><th>Status</th><th>Uploaded</th><th></th></tr>
+        </thead>
+        <tbody id="documents-body"></tbody>
+      </table>
+    </section>
   </main>
+
   <script src="playground.js"></script>
 </body>
 </html>
