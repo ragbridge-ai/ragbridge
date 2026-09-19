@@ -1,11 +1,33 @@
-.venv
+# What the image is built from is what a server holds and a registry would
+# distribute, so keep out anything that is not needed to run the service.
+
+# Version control and tooling caches
 .git
 .github
+.venv
 __pycache__
 *.py[oc]
 .mypy_cache
 .pytest_cache
 .ruff_cache
+
+# Secrets. Any file holding real values, including a future .env.prod.
+# (.env.example is a template, and is not needed at runtime either.)
 .env
+.env.*
+
+# Private, per-developer files - never ship these
+CLAUDE.local.md
+.cursor
+
+# Not needed at runtime
 docs
 tests
+evaluation
+AGENTS.md
+CLAUDE.md
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose*.yml
+Caddyfile

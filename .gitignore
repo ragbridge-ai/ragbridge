@@ -11,6 +11,9 @@ wheels/
 
 # Environment variables
 .env
+.env.*
+!.env.example
+!.env.prod.example
 
 # Tool caches
 .mypy_cache/
