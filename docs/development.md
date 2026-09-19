@@ -1,5 +1,14 @@
 # Development
 
+## Running with Docker
+
+`docker compose up --build` (see the [README](../README.md)) starts PostgreSQL, Redis, the
+API, and the background worker. The API is then available at `http://localhost:8000`, with a liveness check at
+`http://localhost:8000/health` and a readiness check (it queries the database, and
+returns `503` if it is down) at `http://localhost:8000/health/ready` - the only two
+endpoints that need no API key. Database migrations run automatically every time the
+app container starts.
+
 ## Running without Docker
 
 ```bash
