@@ -263,7 +263,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
 
 Sizing, TLS and domains, choosing models, backups and restore, upgrades, security notes
-and known limitations are in [docs/deployment.md](docs/deployment.md). A 21-check smoke
+and known limitations are in [docs/deployment.md](docs/deployment.md). A 22-check smoke
 test of this stack (`scripts/smoke-prod.sh`) runs in CI. On a 2 vCPU / 4 GB server, run
 embeddings locally and use a hosted chat model: measured, a local chat model as well
 leaves almost no memory headroom.

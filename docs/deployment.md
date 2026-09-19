@@ -202,7 +202,7 @@ replica.
 
 ## Security notes
 
-What the stack already does, each checked by `scripts/smoke-prod.sh` (21 checks, run in
+What the stack already does, each checked by `scripts/smoke-prod.sh` (22 checks, run in
 CI):
 
 - Only Caddy publishes ports; Postgres and Redis are unreachable from outside.
@@ -210,7 +210,8 @@ CI):
   credentials published in `.env.example`.
 - Redis requires its password.
 - The app and worker run as an unprivileged user, from code they cannot modify.
-- `/docs` and `/openapi.json` are off.
+- `/docs` and `/openapi.json` are off, and so is the `/playground` page (a development
+  tool; set `ENABLE_PLAYGROUND=true` if you want it on a server).
 - A request body over `MAX_BODY` (12 MB) is refused by the proxy before the app reads it.
 - No private or developer files are in the image.
 - `/documents`, `/query`, `/search`, `/agent` and `/mcp` reject a missing key.
@@ -260,7 +261,7 @@ What is up to you:
 | Backup, destroy everything, restore | **Run** |
 | Upgrade after a code change re-runs migrations | **Run** |
 | Worker crash detected; out-of-memory crash restarted | **Run** |
-| The 21-check smoke test | **Run**, on a laptop and on a GitHub Ubuntu runner |
+| The 22-check smoke test | **Run**, on a laptop and on a GitHub Ubuntu runner |
 | Upgrade with a schema-changing release | Not run |
 | Let's Encrypt certificate for a real domain | **Not run** (no domain) |
 | A hosted model provider | **Not run** (no key) |
