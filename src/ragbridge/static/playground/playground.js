@@ -265,15 +265,128 @@ byId("upload-form").addEventListener("submit", (event) => {
   uploadSelectedFiles();
 });
 
+// --- asking ------------------------------------------------------------------
+
+function seconds(elapsedMs) {
+  return (elapsedMs / 1000).toFixed(1) + " s";
+}
+
+function badge(text, isMiss = false) {
+  return el("span", { className: isMiss ? "badge badge-miss" : "badge", text });
+}
+
+// "vector #1", or "vector: not found" when that retrieval arm did not find the
+// chunk at all (a rank of null in the API).
+function rankBadge(label, rank) {
+  return rank === null ? badge(label + ": not found", true) : badge(label + " #" + rank);
+}
+
+function retrievalBadges(retrieval) {
+  return el(
+    "div",
+    { className: "badges" },
+    rankBadge("vector", retrieval.vector_rank),
+    rankBadge("keyword", retrieval.keyword_rank),
+    badge("fused score " + retrieval.fused_score.toFixed(4)),
+    badge("before rerank #" + retrieval.rank_before_rerank),
+  );
+}
+
+function sourceCard(source, position, textLabel) {
+  const text = source.content !== undefined ? source.content : source.snippet;
+  const card = el(
+    "article",
+    { className: "block block-source" },
+    el(
+      "div",
+      { className: "source-head" },
+      el("strong", { text: "#" + position + "  " + source.filename }),
+      el("span", { text: "chunk " + source.chunk_index }),
+      el("span", { text: "score " + source.score.toFixed(4) }),
+    ),
+    el("p", { className: "origin", text: textLabel }),
+  );
+  if (source.retrieval) {
+    card.append(retrievalBadges(source.retrieval));
+  }
+  card.append(el("pre", { className: "chunk", text }));
+  return card;
+}
+
+function answerBlock(answer) {
+  return el(
+    "section",
+    { className: "block block-answer" },
+    el("h3", { text: "Answer" }),
+    el("p", { className: "origin", text: "Written by the model from the chunks below. It can be wrong." }),
+    el("p", { className: "answer-text", text: answer }),
+  );
+}
+
+function sourcesBlock(sources, textLabel) {
+  const parts = [el("h3", { text: "Sources (" + sources.length + ")" })];
+  sources.forEach((source, index) => parts.push(sourceCard(source, index + 1, textLabel)));
+  return el("section", {}, ...parts);
+}
+
+function renderQueryResult(data, elapsedMs) {
+  byId("result").replaceChildren(
+    el("p", { className: "timing", text: "Answered in " + seconds(elapsedMs) }),
+    answerBlock(data.answer),
+    sourcesBlock(data.sources, "From your documents (the first 300 characters of the chunk)"),
+  );
+}
+
+function renderError(message) {
+  byId("result").replaceChildren(el("p", { className: "error", text: message }));
+}
+
+async function ask() {
+  const question = byId("question").value.trim();
+  if (!question) {
+    setStatus("ask-status", "Type a question first.", true);
+    return;
+  }
+  const payload = { question, top_k: Number(byId("top-k").value) };
+  const mode = byId("retrieval-mode").value;
+  if (mode) {
+    payload.mode = mode;
+  }
+  if (byId("explain").checked) {
+    payload.explain = true;
+  }
+
+  byId("ask-button").disabled = true;
+  byId("result").replaceChildren();
+  setStatus("ask-status", "Working... a local model can take a while.");
+  try {
+    const { data, elapsedMs } = await api("/query", { method: "POST", json: payload });
+    renderQueryResult(data, elapsedMs);
+    setStatus("ask-status", "");
+  } catch (error) {
+    setStatus("ask-status", "");
+    renderError(error.message);
+  } finally {
+    byId("ask-button").disabled = false;
+  }
+}
+
+byId("ask-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  ask();
+});
+
 // --- signing in and out ------------------------------------------------------
 
 function showSignedIn(signedIn) {
   byId("documents-section").hidden = !signedIn;
+  byId("ask-section").hidden = !signedIn;
   byId("forget-key").hidden = !signedIn;
   byId("key-input").value = "";
   if (!signedIn) {
     clearTimeout(pollTimer);
     byId("upload-results").replaceChildren();
+    byId("result").replaceChildren();
   }
 }
 

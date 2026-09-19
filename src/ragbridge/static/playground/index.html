@@ -49,6 +49,33 @@
         <tbody id="documents-body"></tbody>
       </table>
     </section>
+
+    <section id="ask-section" hidden>
+      <h2>3. Ask</h2>
+      <form id="ask-form">
+        <label for="question">Question</label>
+        <textarea id="question" rows="3" placeholder="What does the refund policy say?"></textarea>
+        <div class="options">
+          <label>Chunks to use
+            <input id="top-k" type="number" min="1" max="20" value="5">
+          </label>
+          <label>Retrieval
+            <select id="retrieval-mode">
+              <option value="">server default</option>
+              <option value="hybrid">hybrid</option>
+              <option value="vector">vector only</option>
+              <option value="keyword">keyword only</option>
+            </select>
+          </label>
+          <label class="check">
+            <input id="explain" type="checkbox" checked> Show why each chunk was found
+          </label>
+        </div>
+        <button type="submit" id="ask-button">Ask</button>
+      </form>
+      <p id="ask-status" role="status"></p>
+      <div id="result" aria-live="polite"></div>
+    </section>
   </main>
 
   <script src="playground.js"></script>
