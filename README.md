@@ -31,9 +31,11 @@ docker compose up --build
 ```
 
 This starts PostgreSQL, Redis, the API, and the background worker. The API is then
-available at `http://localhost:8000`, with a health check at
-`http://localhost:8000/health` (the only endpoint that needs no API key). Database
-migrations run automatically every time the app container starts.
+available at `http://localhost:8000`, with a liveness check at
+`http://localhost:8000/health` and a readiness check (it queries the database, and
+returns `503` if it is down) at `http://localhost:8000/health/ready` - the only two
+endpoints that need no API key. Database migrations run automatically every time the
+app container starts.
 
 Every other endpoint needs a key. Create a tenant and its first key:
 
@@ -140,7 +142,8 @@ curl -H "Authorization: Bearer <key>" -X DELETE http://localhost:8000/documents/
 
 ## Multi-tenancy and API keys
 
-Every request except `GET /health` needs `Authorization: Bearer <key>`; a key
+Every request except `GET /health` and `GET /health/ready` needs
+`Authorization: Bearer <key>`; a key
 belongs to exactly one tenant, and a tenant's documents, chunks, and answers are
 invisible to every other tenant. Manage tenants and keys with `ragbridge-admin`:
 
@@ -195,6 +198,8 @@ the full list and defaults. The ones that most affect answer quality and behavio
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `DATABASE_URL` | `postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge` | PostgreSQL connection (compose overrides it for the containers) |
+| `MAX_UPLOAD_SIZE` | `10000000` | Largest accepted upload in bytes; bigger files get `413` |
 | `EMBEDDING_MODEL` | `ollama/nomic-embed-text` | LiteLLM model used to embed chunks |
 | `EMBEDDING_DIMENSION` | `768` | Must match the embedding model's output size |
 | `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |
