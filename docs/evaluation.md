@@ -80,6 +80,32 @@ uv run python -m evaluation.evaluate_agent --api-key <key>
   address, so no LLM judge is needed (ADR 0004 found the default model unreliable as
   one). **Mean steps**: searches the agent ran (a `/query` is always one).
 
+## Choosing a chat model
+
+Two more scripts compare chat models, and they measure different things - a model can
+be good and too slow, or fast and unreliable.
+
+- **`evaluate_qa.py` - answer quality, with no LLM judge.** RAGAS needs a judge model and
+  ADR 0004 found the default one unreliable, so this scores answers *mechanically*, with
+  regular expressions. 43 questions over the Phase 2 corpus: the 25 Phase 2 lookups; 10
+  *paraphrased* questions that share almost no keywords with the text ("how often do I have
+  to replace my password?" for "changed every 180 days"); and 8 questions the documents do
+  not answer, where saying so is correct and inventing an answer is the failure. Its tests
+  prove the scorer is trustworthy: every check accepts its own good example, an evasive
+  answer never passes an answerable question, and one check that wrongly accepted "I don't
+  know" was caught and fixed while writing them.
+- **`measure_model_speed.py` - speed and memory, from Ollama's own counters.** No ragbridge
+  involved: tokens per second writing and reading, cold load time, and how much of the model
+  sits on the GPU. Run it on the machine you will deploy to.
+
+```bash
+uv run python -m evaluation.evaluate_qa --api-key <key> --label ollama/qwen2.5:7b --show-failures
+uv run python -m evaluation.measure_model_speed llama3.2 qwen2.5:7b
+```
+
+The chat model is set on the server (`CHAT_MODEL`); the embedding model does not change
+between comparisons, so uploaded documents stay valid.
+
 ## Results
 
 Every run below is stamped with the exact models and date used - a score without its
@@ -141,8 +167,10 @@ detail shown while building this script - see ADR 0004).
 | `/agent` | 2-hop | 30 | 13% (4/30) | 17% (5/30) | 1.13 |
 | `/agent` | 3-hop | 30 | 13% (4/30) | 7% (2/30) | 1.50 |
 
-**The honest reading: with the default model, `/agent` is not meaningfully better
-than `/query` on multi-hop questions.** The 1-hop control is 100% for both, so
+**The honest reading: with the default model (`llama3.2`), `/agent` is not meaningfully
+better than `/query` on multi-hop questions - but that is a fact about that model, not about
+the loop: see [Chat models compared](#chat-models-compared), where a 7B model makes 2-hop
+questions work.** The 1-hop control is 100% for both, so
 nothing regressed and the harness works. On the multi-hop tiers `/agent` answered 5
 and 2 of 30 correctly against `/query`'s 2 and 0. The two runs repeat the same 15
 questions, so the effective sample is 15, and differences that small are within what
@@ -168,4 +196,70 @@ So the loop itself works - a scripted planner is exercised in
 (no hosted-provider key was available for this run), and any tuning of the planner
 prompt, which is the first lever to try. Both are set through `AGENT_PLANNER_MODEL`
 and `PLANNER_PROMPT` in `ragbridge.agent.planner`; re-run this script after either.
+
+### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
+
+2026-09-19, on an **Apple M1 Pro with 16 GB** (macOS 27.0, Ollama 0.34.1, Docker Desktop's VM
+capped at 3.83 GiB). These are real-world conditions, not a clean lab: Chrome, Cursor and
+this assistant were running, and the Mac already had 5.7-8.7 GB of swap in use throughout
+(Chrome alone held about 4 GB). Embeddings: `nomic-embed-text` in every run. The candidates
+were chosen from the Ollama library's current sizes as the largest that fit alongside
+everything else in 16 GB.
+
+**Speed and memory** (Ollama's counters; "one RAG call" reads about 1,150 tokens of context,
+like five retrieved chunks):
+
+| Model | Writes (tokens/s) | Reads a RAG prompt (tokens/s) | One RAG call | Cold load | Memory when loaded | On the GPU |
+|---|---|---|---|---|---|---|
+| `llama3.2` (3B) | 54 | 522 | 2.6 s | 1.9 s | 2.55 GB | 100% |
+| `qwen2.5:7b` | 26 | 230 | 6.0 s | 3.1 s | 4.74 GB | 100% |
+| `llama3.1:8b` | 24 | 215 | 5.8 s | 3.4 s | 5.26 GB | 100% |
+
+All three ran entirely on the GPU with steady speed across repeats (`qwen2.5:7b`: 25.6, 25.5,
+25.7 tokens/s), so there was no throttling. The Mac swapped 1.2 GB more during the small
+model's run and 1.5-1.8 GB more during the 7-8B ones, so the bigger models cost only
+0.3-0.6 GB more swap than the small one - the pressure comes from the other applications.
+
+**Answer quality**, 43 questions, four runs each (one initial run and three repeats, because
+a single run of a model that samples its answers is not trustworthy):
+
+| Model | Score per run (of 43) | Average | Median seconds per question |
+|---|---|---|---|
+| `llama3.2` (3B) | 39, 40, 38, 40 | 39.2 (91%) | 0.7 |
+| `qwen2.5:7b` | 43, 43, 43, 43 | **43.0 (100%)** | 1.7 |
+| `llama3.1:8b` | 41, 41, 40, 39 | 40.2 (94%) | 1.4 |
+
+`qwen2.5:7b` passed every question in every run. `llama3.1:8b`'s and `llama3.2`'s ranges
+(39-41 and 38-40) overlap, so **the larger `llama3.1:8b` is not reliably better at answering
+than the 3B model** - size alone did not help. Failures were mostly a wrongly evasive "I don't
+know" on an answerable question, and an answer that gave "12 characters" but left out the
+"180 days" rotation (two models). One check (a leading "Yes" to "can I still get a refund
+after 3 weeks?") is a heuristic and may misjudge a hedged answer.
+
+**Multi-step questions with `/agent`**, correct out of 30 (15 distinct questions, each asked
+twice, so the effective sample is smaller than 30):
+
+| Model | 2 hops, run 1 | 2 hops, rerun | 3 hops, run 1 | 3 hops, rerun | Mean searches (2 hops) |
+|---|---|---|---|---|---|
+| `llama3.2` (3B) | 3 | - | 7 | - | 1.10 |
+| `qwen2.5:7b` | **29** | **29** | 6 | 4 | 1.97 / 2.00 |
+| `qwen2.5:7b`, `AGENT_MAX_STEPS=5` | 29 | - | **10** | - | 1.93 (3.33 at 3 hops) |
+| `llama3.1:8b` | 2 | - | 3 | - | 1.00 |
+| plain `/query`, any model | 1-2 | - | 0 | - | 1 |
+
+**`qwen2.5:7b` makes `/agent` work at two hops** - 29 of 30 twice, with almost exactly the two
+searches the question needs - where `llama3.2` and `llama3.1:8b` mostly stop after one search.
+This overturns the conclusion above *for this model*: the loop was never the weak part, the
+planner was. **Three hops remain unreliable**: 13-20% correct at the default limit of 3
+searches, and 33% with a limit of 5 (3.3 searches on average). A 3-hop question needs exactly
+three searches, so the default limit leaves no slack; the improvement from raising it is
+suggestive, not conclusive, given the sample, and each extra search is another model call.
+
+**What to use on a 16 GB laptop:** `qwen2.5:7b` (`CHAT_MODEL=ollama/qwen2.5:7b`, and
+`AGENT_PLANNER_MODEL` if you set one). It is about half the speed of `llama3.2` and still fast
+(about 1.7 s per question end to end). `llama3.2` stays a reasonable choice when speed or
+memory matter more than accuracy. **Not measured:** models other than these three, other
+languages, larger documents, and the same models on a server CPU - this was a GPU laptop.
+`qwen2.5:7b` loads at 4.7 GB, so it does not fit alongside the production stack on a 4 GB
+server (see [deployment.md](deployment.md)).
 

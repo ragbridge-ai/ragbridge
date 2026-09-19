@@ -197,7 +197,8 @@ asked whether a refund is still possible "by then" (up to 90 days), the correct 
 is *no, except for a documented outage*, and it says "you can still request a refund
 within 14 days". A stronger planner or answering model may do better; with the default
 `llama3.2`, [docs/evaluation.md](evaluation.md) measured `/agent` as not meaningfully
-better than `/query`. Prefer `/query` unless you have tested `/agent` on your questions.
+better than `/query`; with `qwen2.5:7b` it handled two-step questions well. Prefer `/query`
+unless you have tested `/agent` on your questions and model.
 
 ### 6. Use it from an MCP client
 

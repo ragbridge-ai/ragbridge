@@ -47,6 +47,9 @@ A model server is separate. `ollama ps` reported **2.55 GB** for `llama3.2` and
 | Stack + local embeddings, hosted chat model | ≈ 1.2 GB | Comfortable |
 | Stack + local embeddings + local `llama3.2` | ≈ 3.7 GB | **No headroom** for the OS, Docker daemon and page cache. Not recommended. |
 
+`qwen2.5:7b`, the best model measured on a 16 GB laptop (see [evaluation.md](evaluation.md)),
+loads at **4.74 GB**, so it does not fit alongside the stack on a 4 GB server either.
+
 So on a 2 vCPU / 4 GB server the recommended split is **local embeddings and a hosted
 chat model** (set `CHAT_MODEL`, and the provider's API key, in `.env.prod`).
 
