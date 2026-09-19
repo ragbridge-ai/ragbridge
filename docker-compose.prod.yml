@@ -1,0 +1,155 @@
+# Production stack for a single Linux host. Run it with:
+#
+#   cp .env.prod.example .env.prod          # then fill in the secrets
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#
+# It differs from docker-compose.yml (development) on purpose:
+#   * Only the reverse proxy is published. Postgres and Redis are reachable
+#     from the other containers and from nowhere else.
+#   * POSTGRES_PASSWORD and REDIS_PASSWORD have no defaults: Compose refuses
+#     to start without them, so a forgotten secret is an error, not "ragbridge".
+#   * The app always runs with ENVIRONMENT=production, so it also refuses to
+#     start if the database password is the one published in .env.example.
+#   * Migrations run once, in their own container, before the app starts.
+#   * Caddy terminates TLS in front of the app.
+# See docs/plans/phase-5.md for the reasoning.
+
+x-logging: &logging
+  # Without a cap, container logs grow until the disk is full.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app-environment: &app-environment
+  # These override anything in .env.prod, so the production settings cannot be
+  # switched off by editing that file.
+  ENVIRONMENT: production
+  ENABLE_DOCS: "false"
+  DATABASE_URL: postgresql+psycopg://ragbridge:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@postgres:5432/ragbridge
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env.prod}@redis:6379/0
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      POSTGRES_USER: ragbridge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ragbridge
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ragbridge -d ragbridge"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    logging: *logging
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD in .env.prod}"]
+    environment:
+      # Lets the healthcheck authenticate without putting the password on a
+      # command line, where redis-cli warns about it.
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    logging: *logging
+    # One-shot: apply migrations and exit. The app starts only after this
+    # succeeds, so two app containers can never race to migrate.
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build: .
+    restart: unless-stopped
+    logging: *logging
+    # Overrides the image's default CMD, which also migrates (see `migrate`).
+    command: ["uvicorn", "ragbridge.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: .env.prod
+    environment: *app-environment
+    extra_hosts:
+      # Lets the container reach an Ollama running on the host. See
+      # OLLAMA_BASE_URL in .env.prod.example.
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # Python, not curl: the slim image has no curl.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=3)"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    restart: unless-stopped
+    logging: *logging
+    command: ["arq", "ragbridge.worker.WorkerSettings"]
+    env_file: .env.prod
+    environment: *app-environment
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      # Reads the heartbeat the worker writes every 30s (see WorkerSettings).
+      test: ["CMD", "arq", "--check", "ragbridge.worker.WorkerSettings"]
+      interval: 30s
+      timeout: 10s
+      retries: 2
+      start_period: 30s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+      MAX_BODY: ${MAX_BODY:-12MB}
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:

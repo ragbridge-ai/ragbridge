@@ -1,0 +1,28 @@
+# Reverse proxy for docker-compose.prod.yml.
+#
+# SITE_ADDRESS decides how TLS works:
+#   * a real domain (rag.example.com): Caddy obtains and renews a Let's Encrypt
+#     certificate automatically. Needs DNS pointing at this host and ports
+#     80 and 443 reachable from the internet.
+#   * localhost (the default): Caddy issues a certificate from its own local
+#     CA, which browsers and curl will not trust without extra steps. Fine
+#     for trying the stack; not for real use.
+{$SITE_ADDRESS:localhost} {
+	# Reject oversized uploads at the proxy. The app enforces MAX_UPLOAD_SIZE
+	# only after it has read the whole body into memory, so without this a
+	# huge request costs memory before it is refused. Keep MAX_BODY a little
+	# above MAX_UPLOAD_SIZE.
+	request_body {
+		max_size {$MAX_BODY:12MB}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	encode gzip
+	reverse_proxy app:8000
+}
