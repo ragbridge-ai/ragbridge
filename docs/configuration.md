@@ -14,7 +14,8 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `EMBEDDING_DIMENSION` | `768` | Must match the embedding model's output size |
 | `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Where to reach Ollama |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | Chunking parameters |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | Maximum characters per chunk, and the context repeated between neighbours. Chunks are cut at line, sentence and word boundaries, never inside a word |
+| `CHUNK_MIN_SIZE` | `100` | A chunk shorter than this is merged into its neighbour; `0` turns it off. A merged chunk can exceed `CHUNK_SIZE` by less than this |
 | `RETRIEVAL_MODE` | `hybrid` | `hybrid` (vector + keyword, merged with reciprocal rank fusion), `vector`, or `keyword` |
 | `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
 | `RERANK_ENABLED` | `false` | Whether `POST /query` reranks retrieved chunks before answering |
@@ -43,3 +44,7 @@ cache is turned on - see [docs/plans/phase-3.md](plans/phase-3.md), step 4, for
 why. Langfuse is off unless both keys above are set - see
 [ADR 0005](adr/0005-cost-tracking-and-tracing-with-langfuse.md) for a known
 limitation with the current LiteLLM/Langfuse SDK combination.
+
+**Changing a chunking setting does not rebuild existing documents.** Their chunks stay as
+they were cut. To apply a change, delete the document and upload it again; there is no
+re-ingest command.

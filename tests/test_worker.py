@@ -77,7 +77,9 @@ def test_process_document_ingests_a_pending_text_document(app_with_database: Fas
 
 
 def test_process_document_stores_chunks(app_with_database: FastAPI) -> None:
-    settings = Settings()
+    # Two paragraphs shorter than the default CHUNK_MIN_SIZE would be merged into one;
+    # this test is about the worker storing one chunk per paragraph.
+    settings = Settings(chunk_min_size=0)
     session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
 
     async def run() -> uuid.UUID:
