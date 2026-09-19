@@ -76,3 +76,17 @@ def test_production_rejects_the_shipped_credentials_from_the_environment(
 
     with pytest.raises(ValidationError, match="DATABASE_URL"):
         Settings()
+
+
+def test_the_playground_is_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ENABLE_PLAYGROUND", raising=False)
+
+    assert Settings(database_url=SHIPPED_URL).enable_playground is True
+
+
+def test_the_playground_can_be_disabled_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ENABLE_PLAYGROUND", "false")
+
+    assert Settings(database_url=SHIPPED_URL).enable_playground is False

@@ -46,6 +46,16 @@ class Settings(BaseSettings):
     operator who wants it can keep it.
     """
 
+    enable_playground: bool = True
+    """Serve the playground page at /playground (docs/plans/phase-6-ui.md).
+
+    A page for trying the service on your own files and seeing what
+    retrieval did - a development and demonstration tool, not a product
+    surface. An explicit switch, like ``enable_docs``, rather than
+    something ``environment`` turns off silently: the production Compose
+    file sets it to false, and an operator who wants it can keep it.
+    """
+
     embedding_model: str = "ollama/nomic-embed-text"
     """LiteLLM model name used to embed chunks."""
     embedding_dimension: int = 768
