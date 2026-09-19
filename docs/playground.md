@@ -52,12 +52,12 @@ Each source shows:
 | `fused score` | The score after merging both searches, before reranking |
 | `before rerank #3` | The chunk's position before the reranker ran. Equal to its final position when reranking is off (the default) |
 
-**A useful thing to know.** The keyword search requires **every** word of the question to
-appear in one chunk (PostgreSQL's `websearch_to_tsquery` joins the words with AND). A
-full sentence such as *"How many business days does a refund take?"* usually matches
-nothing, so every source says `keyword: not found` and only the vector search worked. A
-short query such as `refund business days` matches. Try both in `/search` and compare.
-This is how retrieval behaves today; the page only makes it visible.
+**A useful thing to know.** The keyword search reads a *short* query (under four words) as
+keywords: **every** word has to appear in one chunk, which is what makes an exact term such
+as an error code findable. A longer question is read as a question: a chunk matches when it
+holds *any* of its words, and chunks with more of them rank higher. A quoted phrase, `or`
+and `-word` are always taken exactly as typed. Try `/search` with `refund business days`
+(all three words must match) and then with a full sentence, and compare the `keyword` badges.
 
 `/agent` shows no per-chunk detail: it merges chunks found by several searches, so "rank
 in the vector search" has no single meaning there. It shows the searches instead. With a

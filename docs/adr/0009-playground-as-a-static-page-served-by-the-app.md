@@ -68,7 +68,9 @@ the chunks retrieved from your own PDF.
 - **The keyword arm returns nothing for a plain-English question.** `websearch_to_tsquery`
   joins every stem with AND (`'mani' & 'busi' & 'day' & 'refund' & 'take'`), and no chunk
   holds them all; the short query `refund business days` matched. This is existing
-  retrieval behaviour that the playground made visible. It is not changed here.
+  retrieval behaviour that the playground made visible. It was not changed here; it was
+  fixed afterwards (2026-09-20): a question of four or more words is now an OR of its words,
+  see `keyword_query` in `src/ragbridge/retrieval.py`.
 
 ## Consequences
 
