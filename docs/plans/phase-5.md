@@ -170,3 +170,47 @@ Proposed commit breakdown:
      `openssl rand` one-liner for generating the passwords the next step will require.
 
 Steps 2-5 get their own detailed breakdown when reached, as Phase 4's steps did.
+
+## Outcome
+
+Written after the phase, so the plan above stays as it was decided and this records where
+building it disagreed.
+
+**Where reality differed from the plan**
+
+- The gap table said the image carried tests and evaluation data. Tests were already in
+  `.dockerignore`; the real leak was `CLAUDE.local.md` (private, uncommitted), `.cursor`,
+  `AGENTS.md` and `evaluation/`.
+- The plan put the `HEALTHCHECK` in the Dockerfile. It went in the Compose file instead:
+  one image serves both the app and the worker, so an image-level check would mark the
+  worker unhealthy. The worker got its own check (`arq --check`).
+- The plan did not foresee that arq's default heartbeat is 3600 seconds, which made that
+  check report a crashed worker healthy for up to an hour. `WorkerSettings` now uses 30.
+- Step 1's advice to generate passwords with `openssl rand -base64` was wrong for
+  passwords that sit inside URLs; corrected to `-hex`.
+- Decision 7 planned to measure `/agent` on the Phase 2 evaluation set. That set is six
+  documents of about one chunk each, so a single `/query` already returns 5 of the 6 and
+  the comparison would have been a meaningless tie. A new multi-hop evaluation
+  (`evaluation/evaluate_agent.py`) was built instead.
+- The CI smoke test's first upload-limit check passed with the proxy limit removed. Each
+  check was then mutation-tested (each protection deliberately broken) and that one was
+  tightened.
+- Decision 5 said RAM measurements transfer to the server. They do in principle, but they
+  were taken on macOS, where Ollama reports GPU memory; the guide says so.
+
+**Results**
+
+- `/agent` with the default `llama3.2` planner was **not meaningfully better** than
+  `/query` on multi-step questions (see `docs/evaluation.md`); the loop works and the
+  planner is the weak part. Published as measured.
+- The stack idles at about 573 MiB and peaked near 800 MiB; a local chat model on a 4 GB
+  server leaves almost no headroom.
+- The smoke test runs 21 checks in CI on a GitHub Ubuntu runner as well as locally.
+
+**Still not done - stated, not hidden**
+
+Nothing has been run on a real server. Not verified: a Let's Encrypt certificate (no
+domain), a hosted model provider (no key), Ollama reachable from containers on Linux, host
+firewall behaviour, latency and memory on server hardware, and an upgrade that changes the
+schema. `docs/deployment.md` lists each next to the step it affects. `v1.0.0` here means
+"safe to follow the docs" (decision 8), not "proven on a server".
