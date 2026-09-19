@@ -31,6 +31,10 @@ x-app-environment: &app-environment
   ENABLE_DOCS: "false"
   DATABASE_URL: postgresql+psycopg://ragbridge:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@postgres:5432/ragbridge
   REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env.prod}@redis:6379/0
+  # Inside a container, localhost is the container itself, so an Ollama on the
+  # host is only reachable through the host gateway. Same default as the
+  # development file; a hosted model provider makes this irrelevant.
+  OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
 
 services:
   postgres:
