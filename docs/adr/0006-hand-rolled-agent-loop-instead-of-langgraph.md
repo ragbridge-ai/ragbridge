@@ -89,7 +89,12 @@ Write the loop by hand, in `ragbridge.agent.loop.run_agent`, behind a `Planner`
   9 of 15 at three) stopped after one search, because it judged the first results
   sufficient. When it did search again it sometimes used a name from the findings
   correctly, and one three-hop run reached the right document and answered correctly.
-  So the loop works and the default planner is the weak part. Not measured: a stronger
-  planner model, and any tuning of the planner prompt (the first lever to try).
+  So the loop works and the default planner is the weak part.
+- **Then measured with a stronger planner** (`docs/evaluation.md`): `qwen2.5:7b` answered 29 of
+  30 two-hop questions correctly in two separate runs, against 2-3 for `llama3.2` and
+  `llama3.1:8b`, confirming the planner - not the loop - was the limit. Three hops stay
+  unreliable (13-20% at the default limit of 3 searches, 33% at 5). Size alone did not
+  explain it: `llama3.1:8b` was no better than the 3B model. Not measured: prompt tuning,
+  and models beyond these three.
 - Each `/agent` call is independent: there are no sessions or follow-up questions
   (see `docs/plans/phase-4.md`, decision 7).
