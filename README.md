@@ -263,7 +263,7 @@ docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
 
 Sizing, TLS and domains, choosing models, backups and restore, upgrades, security notes
-and known limitations are in [docs/deployment.md](docs/deployment.md). A 21-check smoke
+and known limitations are in [docs/deployment.md](docs/deployment.md). A 22-check smoke
 test of this stack (`scripts/smoke-prod.sh`) runs in CI. On a 2 vCPU / 4 GB server, run
 embeddings locally and use a hosted chat model: measured, a local chat model as well
 leaves almost no memory headroom.
@@ -279,6 +279,7 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `MAX_UPLOAD_SIZE` | `10000000` | Largest accepted upload in bytes; bigger files get `413` |
 | `ENVIRONMENT` | `development` | `development` or `production`. In production the app refuses to start with the database credentials published in `.env.example` |
 | `ENABLE_DOCS` | `true` | Serve `/docs`, `/redoc` and `/openapi.json`; the production Compose file turns it off |
+| `ENABLE_PLAYGROUND` | `true` | Serve the playground page at `/playground`; the production Compose file turns it off |
 | `EMBEDDING_MODEL` | `ollama/nomic-embed-text` | LiteLLM model used to embed chunks |
 | `EMBEDDING_DIMENSION` | `768` | Must match the embedding model's output size |
 | `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |

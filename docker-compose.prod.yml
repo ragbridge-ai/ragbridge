@@ -29,6 +29,9 @@ x-app-environment: &app-environment
   # switched off by editing that file.
   ENVIRONMENT: production
   ENABLE_DOCS: "false"
+  # A development tool (docs/plans/phase-6-ui.md): a page to try the service on
+  # your own files. An operator who wants it on a server can set this to "true".
+  ENABLE_PLAYGROUND: "false"
   DATABASE_URL: postgresql+psycopg://ragbridge:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}@postgres:5432/ragbridge
   REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env.prod}@redis:6379/0
   # Inside a container, localhost is the container itself, so an Ollama on the
