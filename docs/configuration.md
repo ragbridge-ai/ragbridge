@@ -1,0 +1,45 @@
+# Configuration
+
+All configuration is environment variables - see [.env.example](../.env.example) for
+the full list and defaults. The ones that most affect answer quality and behaviour:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge` | PostgreSQL connection (compose overrides it for the containers) |
+| `MAX_UPLOAD_SIZE` | `10000000` | Largest accepted upload in bytes; bigger files get `413` |
+| `ENVIRONMENT` | `development` | `development` or `production`. In production the app refuses to start with the database credentials published in `.env.example` |
+| `ENABLE_DOCS` | `true` | Serve `/docs`, `/redoc` and `/openapi.json`; the production Compose file turns it off |
+| `ENABLE_PLAYGROUND` | `true` | Serve the playground page at `/playground`; the production Compose file turns it off |
+| `EMBEDDING_MODEL` | `ollama/nomic-embed-text` | LiteLLM model used to embed chunks |
+| `EMBEDDING_DIMENSION` | `768` | Must match the embedding model's output size |
+| `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Where to reach Ollama |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | Chunking parameters |
+| `RETRIEVAL_MODE` | `hybrid` | `hybrid` (vector + keyword, merged with reciprocal rank fusion), `vector`, or `keyword` |
+| `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
+| `RERANK_ENABLED` | `false` | Whether `POST /query` reranks retrieved chunks before answering |
+| `RERANK_MODEL` | `cohere/rerank-v3.5` | LiteLLM rerank model, used only when `RERANK_ENABLED=true` |
+| `REDIS_URL` | `redis://localhost:6379/0` | Queue (background jobs) and cache connection |
+| `ASYNC_PROCESSING_THRESHOLD` | `100000` | Uploads larger than this many bytes are processed by the worker |
+| `EMBEDDING_CACHE_TTL` | `86400` | Seconds a cached embedding lives; `0` disables the embedding cache |
+| `ANSWER_CACHE_ENABLED` | `false` | Whether `POST /query` caches whole answers |
+| `ANSWER_CACHE_TTL` | `3600` | Seconds a cached answer lives, when enabled |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | *(unset)* | Set both to enable Langfuse tracing and cost tracking |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Point at a self-hosted Langfuse instance instead |
+| `AGENT_MAX_STEPS` | `3` | Hard ceiling on searches per `POST /agent` call |
+| `AGENT_PLANNER_MODEL` | *(empty)* | LiteLLM model that decides what to search next; empty reuses `CHAT_MODEL` |
+
+To use a hosted provider instead of Ollama, change `EMBEDDING_MODEL` / `CHAT_MODEL`
+to any [LiteLLM model name](https://docs.litellm.ai/docs/providers) (for example
+`voyage/voyage-3` or `anthropic/claude-...`) and set the matching API key as an
+environment variable. `EMBEDDING_DIMENSION` and `EMBEDDING_MODEL` are fixed per
+installation: changing either after documents have been uploaded requires a new
+migration and re-embedding every existing chunk.
+
+Redis is required for background job processing and for caching; both features stay
+inert (no connection attempted) until an upload actually crosses
+`ASYNC_PROCESSING_THRESHOLD`, an embedding is actually requested, or the answer
+cache is turned on - see [docs/plans/phase-3.md](plans/phase-3.md), step 4, for
+why. Langfuse is off unless both keys above are set - see
+[ADR 0005](adr/0005-cost-tracking-and-tracing-with-langfuse.md) for a known
+limitation with the current LiteLLM/Langfuse SDK combination.

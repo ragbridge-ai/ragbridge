@@ -224,7 +224,8 @@ What is up to you:
   not tested here.)
 - **`.env.prod`** holds secrets: keep it out of git (it is ignored) and out of backups
   you share.
-- **API keys.** Create and revoke with `ragbridge-admin` (see the README). A lost key
+- **API keys.** Create and revoke with `ragbridge-admin` (see
+  [the API guide](api.md#multi-tenancy-and-api-keys)). A lost key
   cannot be recovered, only revoked and replaced.
 - **Rate limiting.** There is none - see below.
 - Keep the operating system and Docker updated.
