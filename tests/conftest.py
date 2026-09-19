@@ -1,11 +1,16 @@
 """Shared fixtures for tests that need a database-backed app."""
 
 import asyncio
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from ragbridge.agent.planner import FakePlanner, get_planner
 from ragbridge.auth import api_key_prefix, generate_api_key, hash_api_key
@@ -17,11 +22,54 @@ from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.embeddings import FakeEmbedder, get_embedder
 from ragbridge.jobs import FakeJobQueue, get_job_queue
 from ragbridge.main import create_app
+from tests.database import assert_is_test_database, safe_database_name
+
+PROJECT_ROOT = Path(__file__).parent.parent
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _test_database() -> None:
+    """Create the test database if it is missing, and migrate it to head.
+
+    ``tests/__init__.py`` has already pointed ``DATABASE_URL`` at
+    ``<name>_test``, so nothing in the suite touches the development
+    database. Migrations run in a subprocess, as they do in CI and in
+    Docker: Alembic's ``env.py`` reconfigures logging, which would
+    disable this process's loggers and break tests that capture logs.
+    """
+    url = Settings().database_url
+    assert_is_test_database(url)
+    name = safe_database_name(url)
+
+    async def create_if_missing() -> None:
+        # CREATE DATABASE cannot run inside a transaction, hence AUTOCOMMIT,
+        # and it is run from the server's maintenance database.
+        admin_url = make_url(url).set(database="postgres")
+        engine = create_async_engine(admin_url, isolation_level="AUTOCOMMIT")
+        async with engine.connect() as connection:
+            exists = await connection.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :name"), {"name": name}
+            )
+            if not exists:
+                await connection.execute(text(f'CREATE DATABASE "{name}"'))
+        await engine.dispose()
+
+    asyncio.run(create_if_missing())
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=PROJECT_ROOT,
+        env=os.environ,
+        check=True,
+        capture_output=True,
+    )
 
 
 @pytest.fixture(autouse=True)
 def _reset_database() -> None:
     """Empty every table before each test.
+
+    Only ever in a ``_test`` database: the guard below refuses anything
+    else, so this cannot delete a developer's data again.
 
     Tests run against the real test database (see decision 5 in
     docs/plans/phase-1.md), not an in-memory fake, so rows written by one
@@ -29,6 +77,8 @@ def _reset_database() -> None:
     two tests uploading a document with the same content would collide
     on the unique ``sha256`` constraint.
     """
+
+    assert_is_test_database(Settings().database_url)
 
     async def truncate_all_tables() -> None:
         engine = create_engine(Settings())
