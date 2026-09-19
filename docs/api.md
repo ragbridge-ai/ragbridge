@@ -1,0 +1,194 @@
+# API guide
+
+How to use ragbridge's HTTP API, with `curl`. Examples assume the API runs at
+`http://localhost:8000` (see the [README](../README.md) to start it) and that you have a key
+from `ragbridge-admin`. Every endpoint except `GET /health` and `GET /health/ready` needs
+`Authorization: Bearer <key>`. With `ENABLE_DOCS=true` (the default), the generated
+interactive reference is at `/docs`. To try all of this without `curl`, use the
+[playground](playground.md).
+
+## Upload a document
+
+```bash
+curl -H "Authorization: Bearer <key>" \
+  -F "file=@notes.md;type=text/markdown" http://localhost:8000/documents
+```
+
+Text (`text/plain`), Markdown (`text/markdown`), and PDF (`application/pdf`) are
+supported. Uploading the same content twice returns the existing document instead
+of creating a duplicate (per tenant - two tenants uploading the same file each get
+their own document). The response includes a `status`
+(`pending` / `processing` / `ready` / `failed`): uploads at or under
+`ASYNC_PROCESSING_THRESHOLD` come back `ready` immediately; larger ones come back
+`pending` right away and are processed by the worker - poll
+`GET /documents/{id}` until `status` is no longer `pending`/`processing`. A `failed`
+document's `error` field explains why (a corrupt PDF, for example).
+
+## Ask a question
+
+```bash
+curl -X POST http://localhost:8000/query \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What does this document say?", "top_k": 5}'
+```
+
+Returns `{"answer": "...", "sources": [...]}`. Each source reports the originating
+document, its chunk position, a text snippet, and a relevance score. Retrieval is
+hybrid by default (vector + keyword search, merged with reciprocal rank fusion -
+see [ADR 0003](adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pass
+`"mode": "vector"` or `"mode": "keyword"` in the request to use a single method
+instead of `RETRIEVAL_MODE`'s default. Only documents belonging to the calling
+tenant's key are ever searched.
+
+## See why a chunk was found
+
+Add `"explain": true` to a `/query` or `/search` request to get, for every returned
+chunk, how retrieval found it:
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "refund policy", "top_k": 2, "explain": true}'
+```
+
+Each result gains a `retrieval` object, and the response gains `candidate_count` (how
+many chunks were found before reranking narrowed them to `top_k`). The scores below are
+illustrative:
+
+```json
+{
+  "results": [
+    {
+      "filename": "policy.md",
+      "content": "...",
+      "score": 0.0323,
+      "retrieval": {
+        "vector_rank": 1,
+        "keyword_rank": 3,
+        "fused_score": 0.0323,
+        "rank_before_rerank": 1
+      }
+    }
+  ],
+  "candidate_count": 12
+}
+```
+
+- `vector_rank` and `keyword_rank` are the chunk's 1-based position in each retrieval arm.
+  **`null` means that arm did not find the chunk at all** - for example, a chunk with
+  none of the question's words has no `keyword_rank`.
+- `fused_score` is the score retrieval gave the chunk before reranking: the merged score
+  in `hybrid` mode, that arm's own score in `vector` or `keyword` mode. With reranking
+  off, it equals `score`.
+- `rank_before_rerank` is the chunk's position before the reranker ran. When it always
+  equals the chunk's position in the results, reranking is off (the default).
+
+Without `explain` the response is exactly what it was before. `/agent` and the MCP tools
+do not offer it: the agent merges chunks found by several searches, so a single arm's
+rank has no clear meaning there.
+
+## Search without generating an answer
+
+```bash
+curl -X POST http://localhost:8000/search \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "refund policy", "top_k": 5}'
+```
+
+Returns `{"results": [...]}`: the same retrieval and reranking as `/query`, stopping
+before generation. Each result is a **whole chunk** (`content`, not a snippet) with its
+document, chunk position, and score - for callers that do their own reasoning over the
+text.
+
+## Ask a multi-step question
+
+```bash
+curl -X POST http://localhost:8000/agent \
+  -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How does our refund policy differ from our cancellation policy?"}'
+```
+
+Returns `{"answer": "...", "sources": [...], "steps": [...], "step_count": N}`. The agent
+searches for the question, then a planner model decides whether another search with a
+different query would help, up to `AGENT_MAX_STEPS` searches. `steps` lists each query
+and how many chunks it found, so a wrong answer can be traced to what was searched.
+Chunks found by several searches appear once. A request may pass `"max_steps"` to use
+fewer searches, never more than the server allows.
+
+The planner must reply with a small JSON object. **If it cannot** - a reply that is not
+valid JSON, names an unknown action, or asks to search for nothing - the agent answers
+with what it has found so far, so `/agent` degrades to `/query` behaviour instead of
+failing ([ADR 0006](adr/0006-hand-rolled-agent-loop-instead-of-langgraph.md)).
+
+**Measured, and worth knowing before you rely on it:** how well `/agent` works depends almost
+entirely on the chat model. On a test built for it (answers reachable only through a chain
+of documents), the default `llama3.2` was **not** meaningfully better than `/query` - it
+usually decided one search was enough. `qwen2.5:7b` answered **29 of 30** two-step questions
+correctly, twice. Three-step questions stay unreliable even then (13-33% correct). On a 16 GB
+laptop `qwen2.5:7b` also scored 43/43 on a 43-question answering test in every run, at about
+half `llama3.2`'s speed. Set it with `CHAT_MODEL=ollama/qwen2.5:7b`. Full method, numbers and
+caveats: [docs/evaluation.md](evaluation.md).
+Each call is independent; there are no sessions or follow-up questions.
+
+## List, fetch, and delete documents
+
+```bash
+curl -H "Authorization: Bearer <key>" http://localhost:8000/documents
+curl -H "Authorization: Bearer <key>" http://localhost:8000/documents/<id>
+curl -H "Authorization: Bearer <key>" -X DELETE http://localhost:8000/documents/<id>
+```
+
+## Multi-tenancy and API keys
+
+Every request except `GET /health` and `GET /health/ready` needs
+`Authorization: Bearer <key>`; a key
+belongs to exactly one tenant, and a tenant's documents, chunks, and answers are
+invisible to every other tenant. Manage tenants and keys with `ragbridge-admin`:
+
+```bash
+uv run ragbridge-admin create-tenant --name acme        # new tenant + first key
+uv run ragbridge-admin list-tenants                     # list all tenants
+uv run ragbridge-admin create-key --tenant-id <id> --name second-key
+uv run ragbridge-admin revoke-key --prefix rb_abcdefgh  # prefix from list output
+```
+
+A key is printed once, at creation time, and stored only as a SHA-256 hash - there
+is no way to recover a lost key, only to revoke it and create a new one.
+
+## MCP
+
+ragbridge is also an [MCP](https://modelcontextprotocol.io) server, so a client such as
+Claude Desktop can search a tenant's documents. It exposes three tools -
+`search_documents` (whole chunks, for the client's own model to reason over), `ask` (a
+finished answer with sources), and `list_documents` - and deliberately not the agent: an
+MCP client is already an agent and can call `search_documents` repeatedly itself.
+
+**Over HTTP**, the server is mounted at `/mcp` (streamable HTTP) and takes the same
+`Authorization: Bearer <key>` as every other endpoint. A request with no bearer token
+gets `401`.
+
+**Over stdio**, for desktop clients, run `ragbridge-mcp`. It is a thin proxy to a
+*running* ragbridge, so it needs no database or Redis of its own:
+
+```bash
+RAGBRIDGE_API_KEY=<key> RAGBRIDGE_BASE_URL=http://localhost:8000 uv run ragbridge-mcp
+```
+
+`RAGBRIDGE_API_KEY` is required; `RAGBRIDGE_BASE_URL` defaults to
+`http://localhost:8000`. In Claude Desktop's config:
+
+```json
+{"mcpServers": {"ragbridge": {
+  "command": "uv",
+  "args": ["--directory", "/path/to/ragbridge", "run", "ragbridge-mcp"],
+  "env": {"RAGBRIDGE_API_KEY": "<key>"}
+}}}
+```
+
+Both transports send every tool call through the REST API with the caller's own key, so
+tenant isolation applies exactly as it does everywhere else - see
+[ADR 0007](adr/0007-mcp-server-on-the-mcp-sdk-2x.md).

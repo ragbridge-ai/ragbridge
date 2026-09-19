@@ -40,7 +40,8 @@ unneeded page. To turn it on anyway, change that line in `docker-compose.prod.ym
 
 ## Reading the retrieval detail
 
-Leave *Show why each chunk was found* on (it sends `"explain": true`, see the README).
+Leave *Show why each chunk was found* on (it sends `"explain": true`, see
+[the API guide](api.md#see-why-a-chunk-was-found)).
 Each source shows:
 
 | Badge | Meaning |
