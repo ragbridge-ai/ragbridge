@@ -53,9 +53,24 @@
     <section id="ask-section" hidden>
       <h2>3. Ask</h2>
       <form id="ask-form">
+        <fieldset>
+          <legend>What to run</legend>
+          <label class="check">
+            <input type="radio" name="endpoint" value="query" checked>
+            Answer with sources (<code>/query</code>)
+          </label>
+          <label class="check">
+            <input type="radio" name="endpoint" value="search">
+            Matching chunks only, no model (<code>/search</code>)
+          </label>
+          <label class="check">
+            <input type="radio" name="endpoint" value="agent">
+            Several searches, then an answer (<code>/agent</code>)
+          </label>
+        </fieldset>
         <label for="question">Question</label>
         <textarea id="question" rows="3" placeholder="What does the refund policy say?"></textarea>
-        <div class="options">
+        <div class="options" id="retrieval-options">
           <label>Chunks to use
             <input id="top-k" type="number" min="1" max="20" value="5">
           </label>
@@ -70,6 +85,15 @@
           <label class="check">
             <input id="explain" type="checkbox" checked> Show why each chunk was found
           </label>
+        </div>
+        <div class="options" id="agent-options" hidden>
+          <label>Most searches
+            <input id="max-steps" type="number" min="1" max="10" value="3">
+          </label>
+          <span class="note">
+            The server sets the real ceiling, and the agent uses the server's retrieval
+            settings. Its answer depends heavily on the chat model (see docs/evaluation.md).
+          </span>
         </div>
         <button type="submit" id="ask-button">Ask</button>
       </form>

@@ -329,9 +329,47 @@ function sourcesBlock(sources, textLabel) {
   return el("section", {}, ...parts);
 }
 
+function timingLine(prefix, elapsedMs) {
+  return el("p", { className: "timing", text: prefix + " in " + seconds(elapsedMs) });
+}
+
 function renderQueryResult(data, elapsedMs) {
   byId("result").replaceChildren(
-    el("p", { className: "timing", text: "Answered in " + seconds(elapsedMs) }),
+    timingLine("Answered", elapsedMs),
+    answerBlock(data.answer),
+    sourcesBlock(data.sources, "From your documents (the first 300 characters of the chunk)"),
+  );
+}
+
+function renderSearchResult(data, elapsedMs) {
+  const found =
+    data.candidate_count === undefined ? "" : " Retrieval found " + data.candidate_count + " in all.";
+  byId("result").replaceChildren(
+    timingLine("Searched", elapsedMs),
+    el("p", { className: "timing", text: "No model was asked to write an answer." + found }),
+    sourcesBlock(data.results, "From your documents (the whole chunk)"),
+  );
+}
+
+// The queries are written by the planner model, so they are shown as text like
+// everything else.
+function stepsBlock(steps) {
+  const items = steps.map((step) =>
+    el("li", { text: "searched for \u201c" + step.query + "\u201d and found " + step.results + " chunk(s)" }),
+  );
+  return el(
+    "section",
+    { className: "block" },
+    el("h3", { text: "Searches the agent ran (" + steps.length + ")" }),
+    el("p", { className: "origin", text: "The first search is always your question itself." }),
+    el("ol", { className: "steps" }, ...items),
+  );
+}
+
+function renderAgentResult(data, elapsedMs) {
+  byId("result").replaceChildren(
+    timingLine("Answered", elapsedMs),
+    stepsBlock(data.steps),
     answerBlock(data.answer),
     sourcesBlock(data.sources, "From your documents (the first 300 characters of the chunk)"),
   );
@@ -341,27 +379,66 @@ function renderError(message) {
   byId("result").replaceChildren(el("p", { className: "error", text: message }));
 }
 
+// What /query and /search share: how many chunks, which retrieval, and whether
+// to explain. Left out of the request when not chosen, so the server's own
+// default applies.
+function retrievalOptions() {
+  const options = { top_k: Number(byId("top-k").value) };
+  const mode = byId("retrieval-mode").value;
+  if (mode) {
+    options.mode = mode;
+  }
+  if (byId("explain").checked) {
+    options.explain = true;
+  }
+  return options;
+}
+
+const ENDPOINTS = {
+  query: {
+    path: "/query",
+    payload: (question) => ({ question, ...retrievalOptions() }),
+    render: renderQueryResult,
+  },
+  search: {
+    path: "/search",
+    payload: (question) => ({ query: question, ...retrievalOptions() }),
+    render: renderSearchResult,
+  },
+  agent: {
+    path: "/agent",
+    payload: (question) => ({ question, max_steps: Number(byId("max-steps").value) }),
+    render: renderAgentResult,
+  },
+};
+
+function selectedEndpoint() {
+  return document.querySelector('input[name="endpoint"]:checked').value;
+}
+
+// Only show the options the chosen endpoint understands.
+function showOptionsFor(endpoint) {
+  byId("retrieval-options").hidden = endpoint === "agent";
+  byId("agent-options").hidden = endpoint !== "agent";
+}
+
 async function ask() {
   const question = byId("question").value.trim();
   if (!question) {
     setStatus("ask-status", "Type a question first.", true);
     return;
   }
-  const payload = { question, top_k: Number(byId("top-k").value) };
-  const mode = byId("retrieval-mode").value;
-  if (mode) {
-    payload.mode = mode;
-  }
-  if (byId("explain").checked) {
-    payload.explain = true;
-  }
+  const endpoint = ENDPOINTS[selectedEndpoint()];
 
   byId("ask-button").disabled = true;
   byId("result").replaceChildren();
   setStatus("ask-status", "Working... a local model can take a while.");
   try {
-    const { data, elapsedMs } = await api("/query", { method: "POST", json: payload });
-    renderQueryResult(data, elapsedMs);
+    const { data, elapsedMs } = await api(endpoint.path, {
+      method: "POST",
+      json: endpoint.payload(question),
+    });
+    endpoint.render(data, elapsedMs);
     setStatus("ask-status", "");
   } catch (error) {
     setStatus("ask-status", "");
@@ -369,6 +446,10 @@ async function ask() {
   } finally {
     byId("ask-button").disabled = false;
   }
+}
+
+for (const radio of document.querySelectorAll('input[name="endpoint"]')) {
+  radio.addEventListener("change", () => showOptionsFor(selectedEndpoint()));
 }
 
 byId("ask-form").addEventListener("submit", (event) => {

@@ -244,3 +244,19 @@ textarea {
   color: var(--muted);
   font-size: 0.85rem;
 }
+
+fieldset {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  margin: 0 0 0.75rem;
+  padding: 0.4rem 0.75rem 0.6rem;
+}
+
+fieldset .check {
+  margin-top: 0.2rem;
+}
+
+.steps {
+  margin: 0.25rem 0 0;
+  padding-left: 1.25rem;
+}
