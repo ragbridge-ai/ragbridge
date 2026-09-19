@@ -40,7 +40,7 @@ framework like LangChain.
 | Tests | pytest, httpx |
 | CI | GitHub Actions |
 | Local infrastructure | Docker Compose |
-| Cloud (Phase 5) | AWS + Terraform |
+| Deployment (Phase 5) | Docker Compose + Caddy on a single Linux host |
 
 Only add a tool when the current phase needs it. Every important tool choice gets a short
 Architecture Decision Record (ADR) in `docs/adr/`.
@@ -76,11 +76,16 @@ Output: `v0.3.0`.
 See the detailed plan: [docs/plans/phase-4.md](docs/plans/phase-4.md).
 
 ### Phase 5 — Deploy and release (Weeks 11–12)
-AWS infrastructure with Terraform, full docs, ADRs, demo in README.
+Self-hosted deployment on a single Linux host (hardened image, production Compose file
+with a Caddy TLS proxy, production-safe settings), full docs, ADRs, demo in README.
+AWS + Terraform was evaluated and dropped - see the plan's decision 1.
 Output: `v1.0.0`.
+See the detailed plan: [docs/plans/phase-5.md](docs/plans/phase-5.md).
 
 ### After v1
-GraphRAG with Neo4j, Qdrant adapter behind the same interface as pgvector, direct MySQL sync.
+GraphRAG with Neo4j, Qdrant adapter behind the same interface as pgvector, direct MySQL
+sync, and Terraform for a cloud provider (deferred from Phase 5: it cannot be applied,
+or even planned, without an account).
 
 ## 5. Project structure (target)
 
