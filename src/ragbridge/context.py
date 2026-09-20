@@ -92,3 +92,38 @@ def _gap_note(first: int, last: int) -> str:
     if first == last:
         return f"[... chunk {first} is not shown ...]"
     return f"[... chunks {first}-{last} are not shown ...]"
+
+
+def add_neighbours(
+    rows: list[SearchResult],
+    available: dict[tuple[uuid.UUID, int], Chunk],
+    *,
+    distance: int,
+    max_chars: int,
+) -> list[SearchResult]:
+    """``rows`` plus the chunks up to ``distance`` before and after each of them.
+
+    ``available`` holds chunks the caller fetched, keyed by ``(document_id,
+    chunk_index)``. Neighbours come after the retrieved rows, so ranking and the
+    retrieved chunks are untouched. They are added best-ranked chunk first, nearest
+    first, and only while the context stays within ``max_chars`` characters: a
+    local model has a small context window, and one that overflows loses the
+    *start* of the prompt. The retrieved chunks themselves are always kept.
+    """
+    documents = {document.id: document for _, document, _ in rows}
+    included = {(chunk.document_id, chunk.chunk_index) for chunk, _, _ in rows}
+    total = sum(len(chunk.content) for chunk, _, _ in rows)
+
+    added: list[SearchResult] = []
+    for offset in range(1, distance + 1):
+        for chunk, document, _ in rows:
+            for index in (chunk.chunk_index - offset, chunk.chunk_index + offset):
+                neighbour = available.get((document.id, index))
+                if neighbour is None or (document.id, index) in included:
+                    continue
+                if total + len(neighbour.content) > max_chars:
+                    continue
+                included.add((document.id, index))
+                total += len(neighbour.content)
+                added.append((neighbour, documents[document.id], 0.0))
+    return rows + added
