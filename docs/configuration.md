@@ -21,6 +21,8 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
 | `RERANK_ENABLED` | `false` | Whether `POST /query` reranks retrieved chunks before answering |
 | `RERANK_MODEL` | `cohere/rerank-v3.5` | LiteLLM rerank model, used only when `RERANK_ENABLED=true` |
+| `ANSWER_CONTEXT_NEIGHBOURS` | `1` | Chunks before and after each retrieved chunk that `POST /query` also gives the answer model, joined into continuous excerpts; `0` turns it off |
+| `ANSWER_CONTEXT_MAX_CHARS` | `6000` | Ceiling on the neighbours added to the answer context (retrieved chunks are always kept); protects a local model's small context window |
 | `REDIS_URL` | `redis://localhost:6379/0` | Queue (background jobs) and cache connection |
 | `ASYNC_PROCESSING_THRESHOLD` | `100000` | Uploads larger than this many bytes are processed by the worker |
 | `EMBEDDING_CACHE_TTL` | `86400` | Seconds a cached embedding lives; `0` disables the embedding cache |

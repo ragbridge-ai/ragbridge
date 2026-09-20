@@ -43,22 +43,18 @@ tenant's key are ever searched.
 
 ### What the answer model reads
 
-`/query` gives the model the retrieved chunks in **document order**, not score order, each
-labelled `[filename, chunk N]` (the same `chunk_index` the response reports for its
-sources), with a note such as `[... chunks 2-3 are not shown ...]` where two retrieved
-chunks are not neighbours. A chunk often ends with a heading whose bullets begin the next
-one; in score order the model could read those bullets before the heading and attach them
-to the wrong company. The response's `sources` stay in score order. The prompt also says
-that a bullet belongs to the heading above it.
-
-### How the keyword search reads your text
-
-Retrieval is hybrid: a vector search plus a keyword (full-text) search. The keyword search
-treats a query of **fewer than four words** as keywords, and every word must appear in one
-chunk. A longer query is treated as a question, and a chunk matches when it holds *any* of
-its words, ranked by how many. A quoted phrase (`"refund policy"`), `or` and `-word` are
-always used exactly as typed. Without this, a long question would match no chunk at all and
-the keyword search would contribute nothing.
+`/query` does not hand the model the retrieved chunks as separate blocks in score order. A
+chunk often ends with a heading whose bullets begin the next one, and read that way the
+model attaches the last bullets of one company to the heading that follows them. So the
+model is given each retrieved chunk **and its neighbours** (`ANSWER_CONTEXT_NEIGHBOURS`,
+default 1) in **document order**, with chunks that were neighbours **joined into one
+continuous excerpt** (the text two chunks share is written once), labelled
+`[filename, chunks 2-4]` with the same `chunk_index` values the response reports, and a
+note such as `[... chunks 5-6 are not shown ...]` where text is missing between excerpts.
+Neighbours are added only up to `ANSWER_CONTEXT_MAX_CHARS`, so a local model's small
+context window is not overflowed. The prompt also says that a bullet belongs to the
+heading above it. The response's `sources` list only what retrieval returned, in score
+order. None of this needs a re-upload: it happens at query time.
 
 ## See why a chunk was found
 
