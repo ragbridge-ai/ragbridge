@@ -47,6 +47,13 @@ from a document the question is not about.
 Run with ``--dataset evaluation/mixed_heldout.jsonl --files evaluation/mixed/*.md`` against
 a scratch tenant. The corpus is invented; nothing in it is a real person or company.
 """
+MIXED_PARAPHRASE_PATH = Path(__file__).parent / "mixed_paraphrase.jsonl"
+DOCS_PARAPHRASE_PATH = Path(__file__).parent / "docs_paraphrase.jsonl"
+"""Held-out paraphrases: questions that share almost no word with the chunk that answers them
+("Which interpreter release does the codebase target?" for a table row ``| Language | Python
+3.12 |``). Written before the reranker's window and scoring were measured. Run with ``--files
+evaluation/mixed/*.md`` and ``--files AGENTS.md docs/plans/phase-4.md docs/plans/phase-5.md``.
+"""
 CONTENT_TYPES = {".md": "text/markdown", ".txt": "text/plain", ".pdf": "application/pdf"}
 KS = (1, 5, 10)
 SEARCH_DEPTH = 20

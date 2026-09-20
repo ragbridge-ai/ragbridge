@@ -1,0 +1,12 @@
+{"id": "p1", "length": "long", "product_name": "without", "facts": "one", "question": "Which interpreter release does the platform run on?", "expected": ["| Language | Python 3.12 |"]}
+{"id": "p2", "length": "long", "product_name": "without", "facts": "one", "question": "Which dependency installer does the platform use?", "expected": ["| Package manager | uv |"]}
+{"id": "p3", "length": "long", "product_name": "without", "facts": "one", "question": "What does the platform use to run its automated checks?", "expected": ["| Tests | pytest |"]}
+{"id": "p4", "length": "long", "product_name": "without", "facts": "one", "question": "Which store keeps the invoice and payment records?", "expected": ["One PostgreSQL database holds all invoice and payment data"]}
+{"id": "p5", "length": "long", "product_name": "without", "facts": "one", "question": "What should I do first when a service refuses to boot?", "expected": ["Read the container logs first, then inspect the exit code."]}
+{"id": "p6", "length": "long", "product_name": "without", "facts": "one", "question": "How is a previous version restored after a bad release?", "expected": ["To roll back, change the image tag in the environment's Compose file"]}
+{"id": "p7", "length": "long", "product_name": "without", "facts": "one", "question": "How long are unused images kept before they are cleaned up?", "expected": ["older than fourteen days"]}
+{"id": "p8", "length": "long", "product_name": "without", "facts": "one", "question": "Where does old application output end up?", "expected": ["the Docker logging driver ships them to the central log store"]}
+{"id": "p9", "length": "long", "product_name": "without", "facts": "one", "question": "Which position involved building a billing interface for many customers?", "expected": ["Built the invoicing API used by 1,200 customers"]}
+{"id": "p10", "length": "long", "product_name": "without", "facts": "one", "question": "Which past position moved a web application from an old framework generation to a newer one?", "expected": ["Migrated the customer portal from Symfony 2 to Symfony 4"]}
+{"id": "p11", "length": "long", "product_name": "without", "facts": "one", "question": "What naming style do classes follow in the PHP code?", "expected": ["Classes use StudlyCase"]}
+{"id": "p12", "length": "long", "product_name": "without", "facts": "one", "question": "Who has to look at a change before it is merged?", "expected": ["Every change is reviewed by one other developer before it is merged"]}

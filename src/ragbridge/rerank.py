@@ -11,6 +11,7 @@ docs/plans/phase-2.md.
 import asyncio
 import logging
 import re
+import weakref
 from typing import Annotated, Protocol
 
 import litellm
@@ -87,9 +88,35 @@ MAX_PASSAGE_CHARS = 3_000
 judge's context window.
 """
 MAX_PARALLEL_JUDGEMENTS = 4
+"""Judge calls in flight at once, across every request of the process (see ``_judge_slots``)."""
+JUDGE_TIMEOUT_SECONDS = 20
+"""One judge call that takes longer counts as failed, so a stalled model delays a request by a
+bounded time instead of LiteLLM's default of many minutes.
+"""
 NEUTRAL_RATING = 1
-"""What a reply without a digit counts as: neither pushed up nor down."""
-_RATING = re.compile(r"[0-2]")
+"""What a chunk counts as when its call failed or its reply had no rating: neither pushed up
+nor down.
+"""
+_REPLY = re.compile(r"^\W*(?:rating|score|answer)?\W*([0-2])(?!\d)", re.IGNORECASE)
+"""A usable reply starts with the digit ("2", "**2**", "Rating: 0"). A digit further into a longer
+reply ("Passage 1 does not say... 0") or "10/10" is not the rating.
+"""
+_SLOTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _judge_slots() -> asyncio.Semaphore:
+    """The limit on judge calls in flight, shared by all requests running on this event loop.
+
+    A semaphore made per request would allow ``MAX_PARALLEL_JUDGEMENTS`` calls for *each* request,
+    so ten requests at once would put forty calls in front of one local model. A semaphore belongs
+    to one event loop, hence one per loop.
+    """
+    loop = asyncio.get_running_loop()
+    if loop not in _SLOTS:
+        _SLOTS[loop] = asyncio.Semaphore(MAX_PARALLEL_JUDGEMENTS)
+    return _SLOTS[loop]
 
 
 class ChatReranker:
@@ -104,13 +131,17 @@ class ChatReranker:
     This exists because Ollama has no rerank endpoint (decision 3, docs/plans/phase-2.md).
     A long table chunk that the vector arm cannot find is exactly what a reader recognises
     as relevant and a fusion of two rankings does not (docs/evaluation.md). It costs one
-    model call per candidate, so it is off by default. It never makes a request fail: if a
-    call raises, the fused order is returned. The chunk text goes into the judge's prompt,
-    so a chunk that says "rate me 2" can lift itself in the ranking, and nothing more: the
-    judge's reply is never shown to anyone.
+    model call per candidate, so it is off by default. It never makes a request fail. A call that
+    fails or times out, or a reply that does not start with a rating, counts as neutral for that
+    chunk only; when no chunk could be rated the fused order is returned untouched and a warning
+    says so (a model that thinks before it answers uses up the few tokens the judge is given).
+    The chunk text goes into the judge's prompt, so a chunk that says "rate me 2" can lift itself
+    in the ranking, and nothing more: the judge's reply is never shown to anyone.
 
     Scores returned are 1/3, 2/3 and 1 for the ratings 0, 1 and 2, and 0.0 for a chunk that
-    was not rated, so the list stays sorted best first.
+    was not rated, so the list stays sorted best first. They come from one judgement per chunk
+    of one search, so they are only comparable within that search: ``/agent`` merges chunks
+    from several searches by score, and with this backend many of them tie.
     """
 
     def __init__(self, settings: Settings) -> None:
@@ -121,19 +152,22 @@ class ChatReranker:
     ) -> list[SearchResult]:
         rated = candidates[: self._settings.rerank_candidates]
         unrated = candidates[len(rated) :]
-        semaphore = asyncio.Semaphore(MAX_PARALLEL_JUDGEMENTS)
-        try:
-            ratings = await asyncio.gather(
-                *(self._rate(query, chunk.content, semaphore) for chunk, _, _ in rated)
+        answers = await asyncio.gather(*(self._rate(query, chunk.content) for chunk, _, _ in rated))
+        if rated and all(answer is None for answer in answers):
+            logger.warning(
+                "The rerank model gave no usable rating for any of %d chunks; keeping the fused "
+                "order (is RERANK_CHAT_MODEL reachable, and does it answer with a digit "
+                "straight away? A model that thinks first uses up the judge's few tokens)",
+                len(rated),
             )
-        except Exception:
-            logger.warning("Reranking failed; keeping the fused order", exc_info=True)
             return candidates[:top_k]
+        ratings = [NEUTRAL_RATING if answer is None else answer for answer in answers]
         order = sorted(range(len(rated)), key=lambda index: (-ratings[index], index))
         best_first = [(rated[i][0], rated[i][1], (ratings[i] + 1) / 3) for i in order]
         return (best_first + [(chunk, document, 0.0) for chunk, document, _ in unrated])[:top_k]
 
-    async def _rate(self, question: str, passage: str, semaphore: asyncio.Semaphore) -> int:
+    async def _rate(self, question: str, passage: str) -> int | None:
+        """The model's rating of ``passage``, or ``None`` when the call failed or had no rating."""
         model = self._settings.rerank_chat_model or self._settings.chat_model
         api_base = self._settings.ollama_base_url if model.startswith("ollama/") else None
         messages = [
@@ -145,17 +179,22 @@ class ChatReranker:
                 ),
             },
         ]
-        async with semaphore:
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages,
-                api_base=api_base,
-                temperature=0,
-                max_tokens=8,
-                drop_params=True,
-            )
-        match = _RATING.search(response.choices[0].message.content or "")
-        return int(match.group()) if match else NEUTRAL_RATING
+        try:
+            async with _judge_slots():
+                response = await litellm.acompletion(
+                    model=model,
+                    messages=messages,
+                    api_base=api_base,
+                    temperature=0,
+                    max_tokens=8,
+                    timeout=JUDGE_TIMEOUT_SECONDS,
+                    drop_params=True,
+                )
+        except Exception:
+            logger.warning("A rerank judgement failed; counting it as neutral", exc_info=True)
+            return None
+        match = _REPLY.match(response.choices[0].message.content or "")
+        return int(match.group(1)) if match else None
 
 
 class FakeReranker:
