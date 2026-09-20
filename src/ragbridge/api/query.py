@@ -69,6 +69,21 @@ class ExplainableQueryResponse(BaseModel):
     sources: list[ExplainableSource]
 
 
+def _settings_fingerprint(settings: Settings) -> str:
+    """A short hash of every setting, so a cached answer is only served under the settings that
+    produced it.
+
+    The corpus version says the *documents* are unchanged; it says nothing about the chat model,
+    the temperature, retrieval, reranking or chunk-neighbour settings, all of which change the
+    answer. Without this, an operator who changes one and restarts keeps getting the old
+    answers until the cache entries expire, and a fix appears not to work. Hashing all of the
+    settings (rather than a list of the ones that matter) means a setting added later cannot be
+    forgotten; the price is that changing any setting, even one that does not shape answers,
+    starts the cache afresh, which costs a few recomputed answers. Only the hash is stored.
+    """
+    return hashlib.sha256(settings.model_dump_json().encode()).hexdigest()[:16]
+
+
 @router.post("/query", response_model=ExplainableQueryResponse, response_model_exclude_unset=True)
 async def answer_query(
     request: QueryRequest,
@@ -83,7 +98,8 @@ async def answer_query(
     """Embed the question, retrieve and rerank chunks, and answer from them.
 
     When ``settings.answer_cache_enabled``, the whole response is cached
-    under a key that includes the tenant's current corpus version - a
+    under a key that includes the tenant's current corpus version and a
+    fingerprint of the settings (``_settings_fingerprint``) - a
     number that ``ingest_document`` and document deletion both bump.
     Bumping it invalidates every cached answer for that tenant at once,
     without enumerating or deleting a single key: the old keys simply
@@ -114,7 +130,8 @@ async def answer_query(
     if settings.answer_cache_enabled:
         corpus_version = await cache.get(f"corpus_version:{tenant.id}") or "0"
         request_digest = hashlib.sha256(
-            f"{request.question}|{request.mode}|{request.top_k}|{request.explain}".encode()
+            f"{_settings_fingerprint(settings)}|{request.question}|{request.mode}|"
+            f"{request.top_k}|{request.explain}".encode()
         ).hexdigest()
         cache_key = f"answer:{tenant.id}:{corpus_version}:{request_digest}"
         cached = await cache.get(cache_key)
