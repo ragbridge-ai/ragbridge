@@ -43,7 +43,16 @@ def test_agent_response_shape_for_a_multi_step_run(
     # Both searches found the same two chunks; they reach the answer once each.
     assert body["answer"] == "Fake answer using 2 chunk(s)."
     assert len(body["sources"]) == 2
-    assert set(body["sources"][0]) == {"document_id", "filename", "chunk_index", "snippet", "score"}
+    assert set(body["sources"][0]) == {
+        "document_id",
+        "filename",
+        "chunk_index",
+        "snippet",
+        "score",
+        "context_only",
+    }
+    # the agent does not add neighbouring chunks, so none of its sources is context-only
+    assert [source["context_only"] for source in body["sources"]] == [False, False]
 
 
 def test_agent_with_a_planner_that_answers_immediately_takes_one_step(

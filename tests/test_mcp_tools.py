@@ -144,4 +144,24 @@ def test_ask_output_schema_has_no_retrieval_detail() -> None:
 
     assert tool.output_schema is not None
     source_fields = set(tool.output_schema["$defs"]["Source"]["properties"])
-    assert source_fields == {"document_id", "filename", "chunk_index", "snippet", "score"}
+    assert source_fields == {
+        "document_id",
+        "filename",
+        "chunk_index",
+        "snippet",
+        "score",
+        "context_only",
+    }
+
+
+def test_ask_tool_description_explains_context_only_sources() -> None:
+    async def run() -> Any:
+        server = build_mcp_server(lambda ctx: RagbridgeClient(httpx.AsyncClient()))
+        async with Client(server) as client:
+            return await client.list_tools()
+
+    [tool] = [t for t in asyncio.run(run()).tools if t.name == "ask"]
+
+    assert tool.description is not None
+    assert "context_only" in tool.description
+    assert "not scored" in tool.description
