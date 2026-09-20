@@ -339,3 +339,49 @@ def test_a_cached_explained_answer_matches_the_fresh_one(
         fresh = client.post("/query", json=request)
         cached = client.post("/query", json=request)
         assert cached.json() == fresh.json()
+
+
+PARAGRAPHS = [
+    "Alpha section: the first block of a document, written long enough that it stays a"
+    " chunk of its own instead of being merged with a neighbour.",
+    "Bravo section: the second block of a document, written long enough that it stays a"
+    " chunk of its own instead of being merged with a neighbour.",
+    "Charlie section: the third block of a document, written long enough that it stays a"
+    " chunk of its own instead of being merged with a neighbour.",
+    "Delta section: the fourth block of a document, written long enough that it stays a"
+    " chunk of its own instead of being merged with a neighbour.",
+]
+assert all(len(paragraph) > 120 for paragraph in PARAGRAPHS)
+
+
+class _RecordingChatter:
+    """Keeps the context it was given, so a test can assert on it."""
+
+    def __init__(self) -> None:
+        self.context: list[str] = []
+
+    async def answer(self, question: str, context: list[str]) -> str:
+        self.context = context
+        return "recorded"
+
+
+def test_query_gives_the_model_document_order_but_returns_sources_in_score_order(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """The model must read a document top to bottom, so a bullet stays under its own
+    heading; the response keeps ranking chunks by relevance.
+    """
+    recorder = _RecordingChatter()
+    app_with_database.dependency_overrides[get_chatter] = lambda: recorder
+    client = _client(app_with_database, tenant_with_key)
+    files = {"file": ("doc.txt", "\n\n".join(PARAGRAPHS).encode(), "text/plain")}
+    assert client.post("/documents", files=files).status_code == 201
+
+    body = client.post("/query", json={"question": "Which section is which?", "top_k": 5}).json()
+
+    source_order = [source["chunk_index"] for source in body["sources"]]
+    assert sorted(source_order) != source_order, "precondition: retrieval is not in document order"
+    assert recorder.context == [
+        f"[doc.txt, chunk {index}]\n{paragraph}" for index, paragraph in enumerate(PARAGRAPHS)
+    ]
+    assert sorted(source_order) == [0, 1, 2, 3]
