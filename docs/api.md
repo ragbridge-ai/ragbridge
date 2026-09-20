@@ -51,6 +51,12 @@ already matches is never loosened. A quoted phrase (`"refund policy"`) or a `-wo
 never relaxed, because that would drop what you asked for. Without the retry, one word that
 is in no document, or a long question, would make the keyword search match nothing at all.
 
+Before that, words that are in **most of your chunks** (more than `KEYWORD_MAX_TERM_FREQUENCY`,
+default half) are left out of the keyword query: a product name or a word like "project" tells
+chunks apart no better than "the" does, and it would let every generic chunk match and take
+keyword credit ahead of the chunk that actually answers. This needs at least 20 chunks, is not
+applied to a quoted phrase or a `-word`, and `1.0` turns it off.
+
 ### What the answer model reads
 
 `/query` does not hand the model the retrieved chunks as separate blocks in score order. A
