@@ -14,11 +14,17 @@ windows, as it always was.
 A chunk shorter than ``min_size`` (a name, a city, a lone URL) says almost
 nothing on its own and still competes with real content in search, so it is
 merged into its neighbour.
+
+A markdown heading belongs with the text below it. No chunk ends on one: the
+heading moves to the start of the next chunk, so the words that describe a
+section are embedded and retrieved with its text. A carried heading can make a
+chunk longer than ``chunk_size`` by the length of the heading.
 """
 
 import re
 
 _PARAGRAPH_SPLIT = re.compile(r"\n\s*\n+")
+_HEADING_LINE = re.compile(r"^#{1,6} \S")
 _BOUNDARIES = (
     re.compile(r"\n"),
     re.compile(r"(?<=[.!?])\s+"),
@@ -55,6 +61,7 @@ def chunk_text(text: str, *, chunk_size: int, chunk_overlap: int, min_size: int 
         else:
             pieces = _pieces(paragraph, chunk_size, chunk_overlap, level=0)
             chunks.extend(_pack(pieces, chunk_size, chunk_overlap))
+    chunks = _carry_headings(chunks, chunk_overlap)
     return _merge_small(chunks, min_size) if min_size > 0 else chunks
 
 
@@ -143,17 +150,55 @@ def _tail(text: str, chunk_overlap: int) -> str:
     return ""
 
 
+def _carry_headings(chunks: list[str], chunk_overlap: int) -> list[str]:
+    """Move the heading lines a chunk ends with to the start of the next chunk.
+
+    Skipped for the last chunk, which has nothing after it, and for a heading the next
+    chunk already starts with because the overlap repeated it. A chunk that was only
+    headings disappears: they now lead the next one.
+    """
+    carried = list(chunks)
+    for index in range(len(carried) - 1):
+        rest, headings = _split_trailing_headings(carried[index])
+        if not headings:
+            continue
+        carried[index] = rest
+        following = carried[index + 1]
+        if headings not in following[: chunk_overlap + len(headings)]:
+            carried[index + 1] = f"{headings}\n\n{following}"
+    return [chunk for chunk in carried if chunk.strip()]
+
+
+def _split_trailing_headings(chunk: str) -> tuple[str, str]:
+    """``(text before, trailing heading lines)``; the second is empty when there are none."""
+    lines = chunk.rstrip().split("\n")
+    start = len(lines)
+    for position in range(len(lines) - 1, -1, -1):
+        if not lines[position].strip():
+            continue  # a blank line between headings does not end the run
+        if _HEADING_LINE.match(lines[position]):
+            start = position
+        else:
+            break
+    if start == len(lines):
+        return chunk, ""
+    return "\n".join(lines[:start]).rstrip(), "\n".join(lines[start:]).strip()
+
+
 def _merge_small(chunks: list[str], min_size: int) -> list[str]:
     """Merge every chunk shorter than ``min_size`` into its neighbour.
 
-    A short chunk joins the one after it (a heading joins its section); a
-    short *last* chunk joins the one before it. A merged chunk can be longer
-    than ``chunk_size`` by less than ``min_size``. A document that is a single
-    short chunk stays as it is: there is no neighbour.
+    A short chunk joins the one after it; one that a heading separates from what
+    follows (``_short_before_a_heading``), and a short *last* chunk, join the one
+    before it. A merged chunk can be longer than ``chunk_size`` by less than
+    ``min_size``. A document that is a single short chunk stays as it is: there is
+    no neighbour.
     """
     merged: list[str] = []
-    for chunk in chunks:
+    for position, chunk in enumerate(chunks):
         if merged and len(merged[-1]) < min_size:
+            merged[-1] = f"{merged[-1]}\n\n{chunk}"
+        elif _short_before_a_heading(chunks, position, min_size) and merged:
             merged[-1] = f"{merged[-1]}\n\n{chunk}"
         else:
             merged.append(chunk)
@@ -161,6 +206,16 @@ def _merge_small(chunks: list[str], min_size: int) -> list[str]:
         last = merged.pop()
         merged[-1] = f"{merged[-1]}\n\n{last}"
     return merged
+
+
+def _short_before_a_heading(chunks: list[str], position: int, min_size: int) -> bool:
+    """A short chunk that the next chunk's heading separates from what follows it.
+
+    It ends the section above the heading, so it joins the chunk before it, not the one
+    after: merging forward would carry it across the heading into the wrong section.
+    """
+    following = chunks[position + 1] if position + 1 < len(chunks) else ""
+    return len(chunks[position]) < min_size and bool(_HEADING_LINE.match(following))
 
 
 def _split_by_characters(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:

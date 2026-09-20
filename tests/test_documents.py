@@ -290,10 +290,29 @@ def test_tiny_paragraphs_are_merged_into_the_next_chunk_on_upload(
     assert "long enough to stand on its own" in stored[0]
 
 
-def test_chunk_min_size_zero_keeps_every_paragraph_as_its_own_chunk(
+def test_chunk_min_size_zero_keeps_paragraphs_separate_but_a_heading_stays_with_its_text(
     app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
+    """No merging of short paragraphs, yet the heading is not left as a chunk of its own:
+    a chunk never ends on a markdown heading, so it leads the paragraph below it.
+    """
     stored = _stored_chunks(app_with_database, tenant_with_key, Settings(chunk_min_size=0))
 
-    assert stored[:2] == ["# Handbook", "Short note."]
-    assert len(stored) == 3
+    assert stored[0] == "# Handbook\n\nShort note."
+    assert len(stored) == 2
+
+
+def test_chunk_min_size_zero_keeps_every_plain_paragraph_as_its_own_chunk(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """Without a heading, nothing is carried: the paragraphs are stored one per chunk."""
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(chunk_min_size=0)
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    text = MARKDOWN_WITH_TINY_PARAGRAPHS.replace("# Handbook", "Handbook")
+    upload = client.post("/documents", files={"file": ("p.md", text.encode(), "text/markdown")})
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+
+    chunks = asyncio.run(fetch_chunks(session_factory, uuid.UUID(upload.json()["id"])))
+
+    assert [chunk.content for chunk in chunks][:2] == ["Handbook", "Short note."]
+    assert len(chunks) == 3
