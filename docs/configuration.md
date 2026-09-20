@@ -7,6 +7,7 @@ the full list and defaults. The ones that most affect answer quality and behavio
 |---|---|---|
 | `DATABASE_URL` | `postgresql+psycopg://ragbridge:ragbridge@localhost:5432/ragbridge` | PostgreSQL connection (compose overrides it for the containers) |
 | `MAX_UPLOAD_SIZE` | `10000000` | Largest accepted upload in bytes; bigger files get `413` |
+| `PDF_EXTRACTION` | `auto` | How PDF pages are read: `auto` (row by row, so a side column of dates stays beside its text, but two columns of prose keep pypdf's order), `plain` (pypdf's default) or `layout` (always row by row). Applies to documents uploaded after a change; delete and re-upload a document to read it again |
 | `ENVIRONMENT` | `development` | `development` or `production`. In production the app refuses to start with the database credentials published in `.env.example` |
 | `ENABLE_DOCS` | `true` | Serve `/docs`, `/redoc` and `/openapi.json`; the production Compose file turns it off |
 | `ENABLE_PLAYGROUND` | `true` | Serve the playground page at `/playground`; the production Compose file turns it off |

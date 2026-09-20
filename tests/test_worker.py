@@ -18,6 +18,7 @@ from ragbridge.db.models import Document, Tenant
 from ragbridge.embeddings import FakeEmbedder
 from ragbridge.worker import JobContext, WorkerSettings, process_document
 from tests.helpers import fetch_chunks
+from tests.pdf_fixtures import build_two_column_cv_pdf
 
 
 async def _create_pending_document(
@@ -121,3 +122,23 @@ def test_worker_heartbeat_is_frequent_enough_for_a_container_healthcheck() -> No
     production stack: 30s detects the crash in about 35s.
     """
     assert WorkerSettings.health_check_interval <= 60
+
+
+def test_process_document_reads_a_pdf_with_the_configured_extraction(
+    app_with_database: FastAPI,
+) -> None:
+    """The background worker parses large PDFs, so it must use the same setting."""
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+
+    async def run(settings: Settings) -> str:
+        document_id = await _create_pending_document(
+            session_factory,
+            raw_content=build_two_column_cv_pdf("main_first"),
+            content_type="application/pdf",
+        )
+        await process_document(_ctx(session_factory, settings), str(document_id))
+        return "\n".join(c.content for c in await fetch_chunks(session_factory, document_id))
+
+    row = "Mar 2022 - present Company A - Senior Engineer"
+    assert row in asyncio.run(run(Settings()))
+    assert row not in asyncio.run(run(Settings(pdf_extraction="plain")))

@@ -106,7 +106,7 @@ async def upload_document(
         return document
 
     try:
-        pages = parse_pages(raw, content_type)
+        pages = parse_pages(raw, content_type, settings.pdf_extraction)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
