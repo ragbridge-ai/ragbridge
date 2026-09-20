@@ -33,7 +33,8 @@ unneeded page. To turn it on anyway, change that line in `docker-compose.prod.ym
    or the server's error. The table shows each document's status and refreshes itself
    while one is still being processed.
 3. **Ask.** Pick what to run:
-   - **`/query`**: an answer, with its sources.
+   - **`/query`**: an answer, with its sources. Neighbouring chunks the model also read are
+     shown dashed as *context only, not scored*.
    - **`/search`**: the matching chunks only, whole, with no model involved. It is fast, and
      the best way to see retrieval by itself.
    - **`/agent`**: several searches, then an answer. The searches it ran are listed first.

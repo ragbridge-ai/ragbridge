@@ -6,6 +6,7 @@ The database is the real test database; embedder and chatter are fakes.
 """
 
 import asyncio
+import re
 from typing import Any
 
 import httpx2
@@ -15,6 +16,7 @@ from mcp import Client
 from mcp.client.streamable_http import streamable_http_client
 
 from ragbridge.auth import generate_api_key
+from ragbridge.chat import get_chatter
 
 SECRET = "The launch code is 8842."
 
@@ -127,3 +129,41 @@ def test_a_request_with_no_bearer_token_is_rejected_with_401(app_with_database: 
     response = TestClient(app_with_database).post("/mcp", json={})
 
     assert response.status_code == 401
+
+
+SIX_SECTIONS = "\n\n".join(
+    f"Section {name}: a block of a document, written long enough that it stays a chunk of its"
+    f" own instead of being merged with a neighbour, number {index}."
+    for index, name in enumerate(["One", "Two", "Three", "Four", "Five", "Six"])
+)
+
+
+class _RecordingChatter:
+    def __init__(self) -> None:
+        self.context: list[str] = []
+
+    async def answer(self, question: str, context: list[str]) -> str:
+        self.context = context
+        return "recorded"
+
+
+def test_ask_sources_are_exactly_the_chunks_the_model_received(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """Over MCP, with the tool's default of five retrieved chunks out of six."""
+    recorder = _RecordingChatter()
+    app_with_database.dependency_overrides[get_chatter] = lambda: recorder
+    _upload(app_with_database, tenant_with_key, "doc.txt", SIX_SECTIONS)
+
+    [result] = _mcp(app_with_database, (tenant_with_key, "ask", {"question": "Which section?"}))
+
+    sources = result.structured_content["sources"]
+    labels = re.findall(r"chunks? (\d+)(?:-(\d+))?\]", "\n".join(recorder.context))
+    received = sorted(
+        index for first, last in labels for index in range(int(first), int(last or first) + 1)
+    )
+    assert received, "the recorder should have seen labelled chunks"
+    assert sorted(source["chunk_index"] for source in sources) == received
+    assert sum(not source["context_only"] for source in sources) == 5
+    assert [source["context_only"] for source in sources][-1] is True
+    assert all(source["score"] == 0.0 for source in sources if source["context_only"])

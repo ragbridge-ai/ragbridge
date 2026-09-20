@@ -67,7 +67,10 @@ def build_mcp_server(client_for: ClientFactory, *, name: str = "ragbridge") -> M
         description=(
             "Ask a question and get a finished answer written from the user's documents, "
             "with the sources it used. Prefer search_documents if you want to read the "
-            "passages and reason over them yourself."
+            "passages and reason over them yourself. `sources` lists every chunk the model "
+            "was given: first the chunks retrieval scored (context_only=false, at most 5, "
+            "best first), then neighbouring chunks given as surrounding text "
+            "(context_only=true, score 0.0, not scored by retrieval)."
         )
     )
     async def ask(question: str, ctx: Context) -> QueryResponse:

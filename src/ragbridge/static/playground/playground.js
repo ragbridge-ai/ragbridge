@@ -294,15 +294,18 @@ function retrievalBadges(retrieval) {
 
 function sourceCard(source, position, textLabel) {
   const text = source.content !== undefined ? source.content : source.snippet;
+  // A neighbour was given to the model as surrounding text but retrieval did not
+  // score it (POST /query, context_only), so it has no score to show.
+  const contextOnly = source.context_only === true;
   const card = el(
     "article",
-    { className: "block block-source" },
+    { className: contextOnly ? "block block-source block-context" : "block block-source" },
     el(
       "div",
       { className: "source-head" },
       el("strong", { text: "#" + position + "  " + source.filename }),
       el("span", { text: "chunk " + source.chunk_index }),
-      el("span", { text: "score " + source.score.toFixed(4) }),
+      el("span", { text: contextOnly ? "context only, not scored" : "score " + source.score.toFixed(4) }),
     ),
     el("p", { className: "origin", text: textLabel }),
   );
@@ -324,7 +327,13 @@ function answerBlock(answer) {
 }
 
 function sourcesBlock(sources, textLabel) {
-  const parts = [el("h3", { text: "Sources (" + sources.length + ")" })];
+  const contextOnly = sources.filter((source) => source.context_only === true).length;
+  const heading =
+    contextOnly === 0
+      ? "Sources (" + sources.length + ")"
+      : "Sources (" + sources.length + "): " + (sources.length - contextOnly) +
+        " retrieved, " + contextOnly + " given as context only";
+  const parts = [el("h3", { text: heading })];
   sources.forEach((source, index) => parts.push(sourceCard(source, index + 1, textLabel)));
   return el("section", {}, ...parts);
 }

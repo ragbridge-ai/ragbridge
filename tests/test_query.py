@@ -1,5 +1,8 @@
 """Tests for POST /query."""
 
+import re
+from typing import Any
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -249,7 +252,14 @@ def test_query_without_explain_has_no_retrieval_fields(
 
     assert set(body) == {"answer", "sources"}
     for source in body["sources"]:
-        assert set(source) == {"document_id", "filename", "chunk_index", "snippet", "score"}
+        assert set(source) == {
+            "document_id",
+            "filename",
+            "chunk_index",
+            "snippet",
+            "score",
+            "context_only",
+        }
 
 
 def test_query_explain_reports_which_arm_found_each_source(
@@ -393,16 +403,27 @@ SIX = [
 ]
 
 
-def _query_top_one(app: FastAPI, key: str, settings: Settings) -> tuple[list[str], list[int]]:
-    """Ask for one chunk; return what the model received and which chunk was the source."""
+def _query_top_one(
+    app: FastAPI, key: str, settings: Settings, *, explain: bool = False
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Ask for one chunk; return what the model received and the response's sources."""
     recorder = _RecordingChatter()
     app.dependency_overrides[get_chatter] = lambda: recorder
     app.dependency_overrides[get_settings] = lambda: settings
     client = _client(app, key)
     files = {"file": ("doc.txt", "\n\n".join(SIX).encode(), "text/plain")}
     assert client.post("/documents", files=files).status_code == 201
-    body = client.post("/query", json={"question": "Which section?", "top_k": 1}).json()
-    return recorder.context, [source["chunk_index"] for source in body["sources"]]
+    request = {"question": "Which section?", "top_k": 1, "explain": explain}
+    body = client.post("/query", json=request).json()
+    return recorder.context, body["sources"]
+
+
+def _chunks_in(context: list[str]) -> list[int]:
+    """The chunk indexes named by the labels of a context, in reading order."""
+    indexes: list[int] = []
+    for first, last in re.findall(r"\[doc\.txt, chunks? (\d+)(?:-(\d+))?\]", "\n".join(context)):
+        indexes.extend(range(int(first), int(last or first) + 1))
+    return indexes
 
 
 def test_query_gives_the_model_the_neighbours_of_the_retrieved_chunk_as_one_excerpt(
@@ -410,11 +431,53 @@ def test_query_gives_the_model_the_neighbours_of_the_retrieved_chunk_as_one_exce
 ) -> None:
     context, sources = _query_top_one(app_with_database, tenant_with_key, Settings())
 
-    [index] = sources
+    [index] = [source["chunk_index"] for source in sources if not source["context_only"]]
     first, last = max(0, index - 1), min(len(SIX) - 1, index + 1)
     span = f"chunk {first}" if first == last else f"chunks {first}-{last}"
     assert context == [f"[doc.txt, {span}]\n" + "\n".join(SIX[first : last + 1])]
-    assert len(sources) == 1, "the response still lists only what retrieval returned"
+
+
+def test_sources_list_exactly_the_chunks_the_model_received(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """The reported bug: the answer used a chunk that ``sources`` did not show."""
+    context, sources = _query_top_one(app_with_database, tenant_with_key, Settings())
+
+    assert sorted(source["chunk_index"] for source in sources) == sorted(_chunks_in(context))
+    assert len(sources) > 1, "top_k was 1 and the neighbours are listed too"
+
+
+def test_retrieved_chunks_come_first_and_neighbours_are_marked_context_only(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    _, sources = _query_top_one(app_with_database, tenant_with_key, Settings())
+
+    assert [source["context_only"] for source in sources][0] is False
+    flags = [source["context_only"] for source in sources]
+    assert flags == sorted(flags), "retrieved chunks (false) first, then context-only (true)"
+    assert sources[0]["score"] > 0
+    assert all(source["score"] == 0.0 for source in sources if source["context_only"])
+    assert any(source["context_only"] for source in sources)
+
+
+def test_every_chunk_is_its_own_source_even_when_they_are_one_excerpt(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    context, sources = _query_top_one(app_with_database, tenant_with_key, Settings())
+
+    assert len(context) == 1, "neighbouring chunks reach the model as one stitched excerpt"
+    assert len(sources) == len(_chunks_in(context)) > 1
+    assert all(source["snippet"] for source in sources)
+
+
+def test_explain_describes_retrieved_chunks_only(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """A neighbour was not retrieved, so it has nothing to explain."""
+    _, sources = _query_top_one(app_with_database, tenant_with_key, Settings(), explain=True)
+
+    for source in sources:
+        assert ("retrieval" in source) is (not source["context_only"])
 
 
 def test_neighbours_can_be_turned_off(app_with_database: FastAPI, tenant_with_key: str) -> None:
@@ -422,8 +485,9 @@ def test_neighbours_can_be_turned_off(app_with_database: FastAPI, tenant_with_ke
         app_with_database, tenant_with_key, Settings(answer_context_neighbours=0)
     )
 
-    [index] = sources
+    [index] = [source["chunk_index"] for source in sources]
     assert context == [f"[doc.txt, chunk {index}]\n{SIX[index]}"]
+    assert [source["context_only"] for source in sources] == [False]
 
 
 def test_neighbours_are_dropped_when_the_character_budget_is_too_small(
@@ -433,5 +497,6 @@ def test_neighbours_are_dropped_when_the_character_budget_is_too_small(
         app_with_database, tenant_with_key, Settings(answer_context_max_chars=10)
     )
 
-    [index] = sources
+    [index] = [source["chunk_index"] for source in sources]
     assert context == [f"[doc.txt, chunk {index}]\n{SIX[index]}"]
+    assert [source["context_only"] for source in sources] == [False]

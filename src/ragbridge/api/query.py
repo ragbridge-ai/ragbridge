@@ -41,6 +41,10 @@ class Source(BaseModel):
     chunk_index: int
     snippet: str
     score: float
+    context_only: bool = False
+    """``True`` for a chunk the model was given as surrounding context that retrieval did
+    not return: it was not scored (``score`` is 0.0) and does not count towards ``top_k``.
+    """
 
 
 class QueryResponse(BaseModel):
@@ -96,8 +100,9 @@ async def answer_query(
 
     The model is given the retrieved chunks and their neighbours as continuous,
     labelled excerpts in document order, with gap notes (``build_context``), so a
-    bullet is read under its own heading; ``sources`` lists only what retrieval
-    returned, in score order.
+    bullet is read under its own heading. ``sources`` lists exactly the chunks the
+    model received, one entry per chunk: the ``top_k`` retrieved ones first, in
+    score order, then the neighbours, each marked ``context_only`` with score 0.0.
 
     ``explain`` is part of the cache key: an answer cached without it
     must not be served to a request that asked for the retrieval detail,
@@ -150,11 +155,12 @@ async def answer_query(
                 chunk_index=chunk.chunk_index,
                 snippet=chunk.content[:SNIPPET_LENGTH],
                 score=score,
+                context_only=position >= len(rows),
             )
-            for chunk, document, score in rows
+            for position, (chunk, document, score) in enumerate(shown)
         ]
         if request.explain:
-            for source, (chunk, _, _) in zip(sources, rows, strict=True):
+            for source, (chunk, _, _) in zip(sources, rows, strict=False):
                 source.retrieval = build_retrieval_info(candidates, provenance, chunk.id)
         response = ExplainableQueryResponse(answer=answer, sources=sources)
         span.update(output=response.model_dump(exclude_unset=True))
