@@ -14,6 +14,7 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `EMBEDDING_MODEL` | `ollama/nomic-embed-text` | LiteLLM model used to embed chunks |
 | `EMBEDDING_DIMENSION` | `768` | Must match the embedding model's output size |
 | `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |
+| `CHAT_TEMPERATURE` | `0` | Sampling temperature of the answer model (`0`-`2`). `0` gives the same answer to the same question over the same context; without it a provider uses its own default (Ollama: `0.8`) and a small local model can read one bullet under a different heading from run to run. Providers that reject the parameter do not receive it |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Where to reach Ollama |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | Maximum characters per chunk, and the context repeated between neighbours. Chunks are cut at line, sentence and word boundaries, never inside a word |
 | `CHUNK_MIN_SIZE` | `100` | A chunk shorter than this is merged into its neighbour; `0` turns it off. A merged chunk can exceed `CHUNK_SIZE` by less than this. Independently of this setting, a Markdown heading line (`#` to `######`, then a space) is never the last line of a chunk: it moves to the start of the next one, so it stays with its text, and that chunk can exceed `CHUNK_SIZE` by the heading's length (a `# comment` in a code block looks the same and is treated the same). Chunks are built at upload: documents uploaded earlier keep their old chunks until you delete and re-upload them |

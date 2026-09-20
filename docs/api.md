@@ -84,6 +84,14 @@ heading above it. Every chunk the model received is listed in the response's `so
 the retrieved ones first, in score order, then the neighbours marked `context_only`. None
 of this needs a re-upload: it happens at query time.
 
+The answer is sampled at `CHAT_TEMPERATURE` (default `0`), so the same question over the same
+context gives the same answer. Without it Ollama samples at 0.8, and a 7B model read one bullet
+under a different company's heading from run to run. One limit stays, measured in
+[the evaluation notes](evaluation.md#the-answer-model-repeated-runs): if the chunk holding a
+bullet's heading is *not* in the context (neighbours turned off, or dropped by
+`ANSWER_CONTEXT_MAX_CHARS`), the model attaches the bullet to the heading below it every time,
+whatever the temperature. Check `sources` for `context_only` chunks to see what it received.
+
 ## See why a chunk was found
 
 Add `"explain": true` to a `/query` or `/search` request to get, for every returned

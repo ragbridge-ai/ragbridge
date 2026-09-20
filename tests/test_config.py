@@ -106,3 +106,13 @@ def test_chunk_min_size_must_be_smaller_than_chunk_size() -> None:
 def test_chunk_overlap_must_be_smaller_than_chunk_size_at_startup() -> None:
     with pytest.raises(ValidationError, match="CHUNK_OVERLAP"):
         Settings(database_url=SHIPPED_URL, chunk_size=200, chunk_overlap=200)
+
+
+def test_the_answer_model_temperature_defaults_to_zero() -> None:
+    assert Settings(database_url=SHIPPED_URL).chat_temperature == 0.0
+
+
+@pytest.mark.parametrize("value", [-0.1, 2.1])
+def test_a_temperature_outside_the_range_of_providers_is_refused(value: float) -> None:
+    with pytest.raises(ValidationError):
+        Settings(database_url=SHIPPED_URL, chat_temperature=value)
