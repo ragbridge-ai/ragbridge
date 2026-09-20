@@ -109,8 +109,61 @@ def or_fallback_query(query: str) -> str | None:
     return " or ".join(words)
 
 
+MIN_CHUNKS_FOR_TERM_FREQUENCY = 20
+"""Below this many chunks a word's frequency means nothing: in a handful of chunks, every
+word is "common".
+"""
+
+
+async def _common_words(
+    session: AsyncSession, words: list[str], tenant_id: uuid.UUID, max_share: float
+) -> set[str]:
+    """The words, lower-cased, that occur in more than ``max_share`` of the tenant's chunks.
+
+    One pass over the tenant's chunks counts every word at once. A word is matched the way
+    the keyword search matches it (``websearch_to_tsquery``, so stemmed), and a stopword
+    matches nothing.
+    """
+    distinct = sorted({word.lower() for word in words if word.lower() != "or"})
+    if not distinct:
+        return set()
+    counts = [
+        func.count().filter(Chunk.content_tsv.op("@@")(func.websearch_to_tsquery("english", word)))
+        for word in distinct
+    ]
+    result = await session.execute(
+        select(func.count(), *counts).where(Chunk.tenant_id == tenant_id)
+    )
+    total, *per_word = result.one()
+    if total < MIN_CHUNKS_FOR_TERM_FREQUENCY:
+        return set()
+    return {
+        word for word, count in zip(distinct, per_word, strict=True) if count / total > max_share
+    }
+
+
+async def _without_common_words(
+    session: AsyncSession, query: str, tenant_id: uuid.UUID, max_share: float
+) -> str:
+    """``query`` without its words that occur in most chunks; as typed when that cannot apply."""
+    if max_share >= 1.0 or _STRICT_SYNTAX.search(query):
+        return query
+    common = await _common_words(session, _WORD.findall(query), tenant_id, max_share)
+    if not common:
+        return query
+    reduced = _WORD.sub(lambda word: "" if word.group().lower() in common else word.group(), query)
+    if not any(word.lower() != "or" for word in _WORD.findall(reduced)):
+        return query  # nothing but common words: keep them rather than search for nothing
+    return " ".join(reduced.split())
+
+
 async def keyword_search(
-    session: AsyncSession, query: str, limit: int, *, tenant_id: uuid.UUID
+    session: AsyncSession,
+    query: str,
+    limit: int,
+    *,
+    tenant_id: uuid.UUID,
+    max_term_share: float = 1.0,
 ) -> list[SearchResult]:
     """Return ``tenant_id``'s chunks that best match ``query`` by full-text search, best first.
 
@@ -118,11 +171,14 @@ async def keyword_search(
     types (bare words, ``"quoted phrases"``, ``or``, ``-excluded``) - unlike
     ``to_tsquery`` it never raises on a plain sentence. The query is run as typed;
     if that finds nothing, it is run once more as an OR of its words
-    (``or_fallback_query``). Score is ``ts_rank``, PostgreSQL's own relevance
+    (``or_fallback_query``). Words that occur in more than ``max_term_share`` of the
+    tenant's chunks are left out first (``_without_common_words``); 1.0 leaves the query
+    alone. Score is ``ts_rank``, PostgreSQL's own relevance
     measure for a tsquery match against a tsvector. The GIN index behind ``@@`` is
     an exact match, not an approximation, so - unlike ``vector_search`` - adding a
     tenant filter here needs no special handling to stay correct.
     """
+    query = await _without_common_words(session, query, tenant_id, max_term_share)
     rows = await _keyword_rows(session, query, limit, tenant_id)
     if not rows:
         fallback = or_fallback_query(query)
@@ -183,6 +239,7 @@ async def hybrid_search_with_provenance(
     mode: Literal["hybrid", "vector", "keyword"],
     candidates: int,
     tenant_id: uuid.UUID,
+    max_term_share: float = 1.0,
 ) -> tuple[list[SearchResult], dict[uuid.UUID, ChunkProvenance]]:
     """Retrieve up to ``candidates`` of ``tenant_id``'s chunks for a question, using ``mode``.
 
@@ -212,7 +269,9 @@ async def hybrid_search_with_provenance(
             for chunk, _, score in rows
         }
     if mode == "keyword":
-        rows = await keyword_search(session, query, candidates, tenant_id=tenant_id)
+        rows = await keyword_search(
+            session, query, candidates, tenant_id=tenant_id, max_term_share=max_term_share
+        )
         keyword_ranks = _ranks(rows)
         return rows, {
             chunk.id: ChunkProvenance(None, keyword_ranks[chunk.id], score)
@@ -220,7 +279,9 @@ async def hybrid_search_with_provenance(
         }
 
     vector_rows = await vector_search(session, embedding, candidates, tenant_id=tenant_id)
-    keyword_rows = await keyword_search(session, query, candidates, tenant_id=tenant_id)
+    keyword_rows = await keyword_search(
+        session, query, candidates, tenant_id=tenant_id, max_term_share=max_term_share
+    )
     fused = reciprocal_rank_fusion([vector_rows, keyword_rows])
     vector_ranks = _ranks(vector_rows)
     keyword_ranks = _ranks(keyword_rows)
@@ -238,6 +299,7 @@ async def hybrid_search(
     mode: Literal["hybrid", "vector", "keyword"],
     candidates: int,
     tenant_id: uuid.UUID,
+    max_term_share: float = 1.0,
 ) -> list[SearchResult]:
     """Retrieve up to ``candidates`` chunks for a question, using ``mode``.
 
@@ -245,7 +307,13 @@ async def hybrid_search(
     provenance. Every caller that does not need to explain itself uses this.
     """
     rows, _ = await hybrid_search_with_provenance(
-        session, embedding, query, mode=mode, candidates=candidates, tenant_id=tenant_id
+        session,
+        embedding,
+        query,
+        mode=mode,
+        candidates=candidates,
+        tenant_id=tenant_id,
+        max_term_share=max_term_share,
     )
     return rows
 

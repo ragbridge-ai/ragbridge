@@ -74,6 +74,7 @@ async def answer_with_agent(
             query,
             mode=settings.retrieval_mode,
             candidates=settings.retrieval_candidates,
+            max_term_share=settings.keyword_max_term_frequency,
             tenant_id=tenant.id,
         )
         return await reranker.rerank(query, candidates, TOP_K_PER_STEP)
