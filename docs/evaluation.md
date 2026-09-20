@@ -315,6 +315,45 @@ No guard beats the current behaviour in hybrid mode, so none was kept. What fill
 with foreign chunks is the vector arm and the fusion, which is what a reranker addresses.
 Reproduce with `--dataset evaluation/mixed_heldout.jsonl --files evaluation/mixed/*.md`.
 
+#### Questions whose answer is a long table: split, agent, or rerank? (measured)
+
+For a question about a technology table that does not rank it first, the vector arm has not found
+the table chunk at all (it is absent from its top 20), the keyword arm has it at rank 1 or 2, and
+fusion leaves it at rank 2 to 6. Three ideas were tried as scratch experiments on the
+held-out questions before any code was written; only the third was kept.
+
+Hybrid mode, recall@5 / MRR, `nomic-embed-text`, 2026-09-20:
+
+| Method | synthetic (12) | real prose (8) | mixed (18) | original 16 | Acme (25) | added latency |
+|---|---|---|---|---|---|---|
+| plain hybrid | 0.96 / 0.725 | 0.88 / 0.750 | 1.00 / 0.917 | 0.97 / 0.596 | 1.00 / 0.960 | |
+| split a two-part question into sub-queries, fuse them | 0.83 / 0.671 | 0.75 / 0.699 | 1.00 / 0.917 | 0.88 / 0.521 | | ~0 |
+| `/agent` (planner `qwen2.5:7b`) | 0.96 / 0.725 | | | | | 1.42 searches per question |
+| rerank the 10 best with `llama3.2:3b` | 1.00 / 0.750 | 0.88 / 0.750 | 1.00 / 0.917 | 1.00 / 0.646 | | ~3 s |
+| **rerank the 10 best with `qwen2.5:7b`** (`RERANK_BACKEND=chat`) | **1.00 / 0.958** | **0.88 / 0.812** | **1.00 / 1.000** | **1.00 / 0.969** | **1.00 / 0.980** | **3.5 to 6.8 s** |
+
+- **Splitting** a question at "and which / where / how" and fusing the sub-searches made ranking
+  worse on three sets: every sub-search brings its own generic chunks into the fusion.
+- **Agent mode** gave exactly the plain result on the synthetic set: it searches again with the same
+  retrieval, which cannot see the table.
+- **Reranking** with a chat model is what helps: the 7B model puts the table chunk first because it
+  reads the question and the chunk together. recall@1 went from 0.50 to 0.83 (synthetic), 0.62 to 0.75
+  (real prose), 0.83 to 1.00 (mixed), 0.22 to 0.84 (original 16). The 3B model gained almost nothing,
+  so the rating model matters more than the mechanism. Nothing regressed, including Acme
+  (MRR 0.960 to 0.980).
+- **What it does not fix.** `d8` ("Which operating system runs on the production server?") stays missed:
+  its chunk says "Ubuntu 24", shares no word with the question, and sits at vector rank 15 and beyond
+  fused rank 20, outside the 10 chunks that are rated. A wider window (`RERANK_CANDIDATES`) was not
+  measured. Foreign chunks in the top 5 do not fall with reranking, which is right: a Docker chunk is
+  relevant to a Docker question.
+- **Costs.** One model call per rated chunk (4 at a time), about 3.5 to 6.8 s for 10 chunks on an M1 Pro
+  with `qwen2.5:7b` running alongside the answer model. `/agent` reranks every search step. If a call
+  fails, the fused order is kept. The scores in the response become 1/3, 2/3 and 1 for the model's
+  ratings 0, 1 and 2.
+- **Limits.** 54 held-out questions on invented corpora and this repository's documents, one 7B
+  model on one machine, one run per row; retrieval itself varies by about one chunk between runs.
+  Reproduce with `RERANK_ENABLED=true RERANK_BACKEND=chat` on the server and the commands above.
+
 ### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
 
 2026-09-19, on an **Apple M1 Pro with 16 GB** (macOS 27.0, Ollama 0.34.1, Docker Desktop's VM
