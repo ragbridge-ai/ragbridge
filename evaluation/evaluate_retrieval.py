@@ -132,7 +132,9 @@ def evaluate_retrieval(
     for question in questions:
         response = client.post("/query", json={"question": question.question, "top_k": top_k})
         response.raise_for_status()
-        sources = response.json()["sources"]
+        # POST /query also lists the neighbours it gave the model (context_only): retrieval
+        # did not return them, so they must not count as retrieved.
+        sources = [s for s in response.json()["sources"] if not s.get("context_only", False)]
 
         rank = next(
             (
