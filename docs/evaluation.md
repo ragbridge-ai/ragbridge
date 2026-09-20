@@ -276,6 +276,45 @@ favours weak agreement between two arms over one arm's certainty, and the vector
 retrieve the chunk at all. Rarity weighting cannot change that: it only reorders inside the
 keyword arm. The next options are in the pull request that added this section.
 
+#### Does one rare word pull chunks from unrelated documents? (measured, nothing kept)
+
+After rarity weighting, a reported answer had unrelated chunks from other documents in 2 of its
+5 scored slots. To see whether the keyword arm is the cause, a third held-out set was written
+before any variant was tried: 18 questions on a mixed corpus of one invented CV and three
+technical documents that share words with it ("jobs", "Docker", "container"; 26 chunks,
+`evaluation/mixed/`). Three guards were prototyped, run on identical data (a scratch tenant per
+corpus, `nomic-embed-text`, no chat model), and reverted:
+
+- **B, require 2 matched terms** in the OR fallback (or 1, when only one word occurs anywhere);
+- **C, prefer 2-term chunks**: rank chunks matching two or more words before the others;
+- **D, cap one word's weight** at half of `ln(chunks)`, so one word cannot outweigh two rare ones.
+
+Hybrid mode, recall@5 / MRR. "Foreign" is the mean number of the top 5 results that come from a
+document that does not hold the answer (mixed and real-prose sets).
+
+| Variant | synthetic (12) | real prose (8) | mixed (18) | original 16 | Acme (25) | foreign, mixed: keyword / hybrid | foreign, real prose: keyword / hybrid |
+|---|---|---|---|---|---|---|---|
+| current (rarity weighting on) | 0.96 / 0.725 | 0.88 / 0.750 | 1.00 / 0.917 | 0.97 / 0.596 | 1.00 / 0.960 | 2.00 / 2.39 | 1.62 / 1.62 |
+| rarity weighting off (reference) | 0.96 / 0.725 | 0.88 / 0.750 | 1.00 / 0.852 | 0.97 / 0.596 | 1.00 / 0.960 | | |
+| B require 2 terms | 0.92 / 0.736 | 0.88 / 0.819 | 1.00 / 0.917 | 1.00 / 0.604 | 1.00 / 0.960 | **0.61** / 2.11 | 0.62 / 1.75 |
+| C prefer 2-term chunks | 0.96 / 0.725 | 0.88 / 0.750 | 1.00 / 0.917 | 0.97 / 0.596 | 1.00 / 0.960 | 2.00 / 2.44 | 1.50 / 1.75 |
+| D cap one word | 0.96 / 0.725 | 0.88 / 0.750 | 1.00 / 0.852 | 0.97 / 0.596 | 1.00 / 0.940 | 2.00 / 2.39 | 1.50 / 1.75 |
+
+- The pull is real **in the keyword arm**: requiring two terms cuts foreign chunks in its top 5
+  from 2.00 to 0.61 (mixed) and from 1.62 to 0.62 (real prose).
+- It **does not reach the hybrid result**: foreign chunks there barely move (2.39 to 2.11), because
+  the vector arm supplies them on its own (a Docker question is close to every Docker chunk).
+- Requiring two terms costs keyword-mode recall@5 where the answer has one informative word:
+  1.00 to 0.88 on the synthetic set (2 questions) and 1.00 to 0.94 on the mixed set (the "Python
+  3.12" table chunk). In hybrid it is a wash: it loses one synthetic question and recovers two
+  others.
+- Preferring 2-term chunks changes no recall or MRR. Capping a word's weight makes the mixed set
+  (MRR 0.917 to 0.852) and Acme (0.960 to 0.940) worse.
+
+No guard beats the current behaviour in hybrid mode, so none was kept. What fills the scored slots
+with foreign chunks is the vector arm and the fusion, which is what a reranker addresses.
+Reproduce with `--dataset evaluation/mixed_heldout.jsonl --files evaluation/mixed/*.md`.
+
 ### The answer model: repeated runs
 
 Two answers that were right in one build were wrong in the next, with the same retrieval. To
@@ -313,6 +352,7 @@ What this shows, and what it does not:
   Docker. Rarity weighting added one chunk that matched only the word "jobs".
 - One corpus of 26 invented chunks, one 7B model, 4 to 10 runs per row. It shows a mechanism,
   not a rate.
+
 
 ### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
 

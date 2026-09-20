@@ -13,6 +13,8 @@ from evaluation.evaluate_ranking import (
     DATASET_PATH,
     DOCS_HELDOUT_PATH,
     HELDOUT_PATH,
+    MIXED_DIR,
+    MIXED_HELDOUT_PATH,
     MODES,
     Case,
     CaseResult,
@@ -171,3 +173,20 @@ def test_the_real_prose_questions_find_their_markers_in_the_public_documents() -
     for case in cases:
         for marker in case.expected:
             assert text.count(marker) >= 1, (case.id, marker)
+
+
+def test_the_mixed_corpus_questions_find_their_markers_in_its_chunks() -> None:
+    """A marker may sit in two chunks (the overlap repeats it), but it must be in one."""
+    chunks = [
+        chunk
+        for path in sorted(MIXED_DIR.glob("*.md"))
+        for chunk in chunk_text(path.read_text(), chunk_size=1000, chunk_overlap=200, min_size=100)
+    ]
+    cases = load_cases(MIXED_HELDOUT_PATH)
+
+    assert len(chunks) >= 20, "below 20 chunks rarity weighting and term filtering do not run"
+    assert len(cases) >= 15
+    assert len({case.id for case in cases}) == len(cases)
+    for case in cases:
+        for marker in case.expected:
+            assert any(marker in chunk for chunk in chunks), (case.id, marker)

@@ -38,6 +38,15 @@ DOCS_HELDOUT_PATH = Path(__file__).parent / "docs_heldout.jsonl"
 Run with ``--dataset evaluation/docs_heldout.jsonl --files AGENTS.md
 docs/plans/phase-4.md docs/plans/phase-5.md`` against a scratch tenant.
 """
+MIXED_DIR = Path(__file__).parent / "mixed"
+MIXED_HELDOUT_PATH = Path(__file__).parent / "mixed_heldout.jsonl"
+"""Held-out questions on a mixed corpus: an invented CV and three technical documents that
+share words with it ("jobs", "Docker", "container"), so a single shared word can pull chunks
+from a document the question is not about.
+
+Run with ``--dataset evaluation/mixed_heldout.jsonl --files evaluation/mixed/*.md`` against
+a scratch tenant. The corpus is invented; nothing in it is a real person or company.
+"""
 CONTENT_TYPES = {".md": "text/markdown", ".txt": "text/plain", ".pdf": "application/pdf"}
 KS = (1, 5, 10)
 SEARCH_DEPTH = 20
