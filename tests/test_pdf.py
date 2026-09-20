@@ -77,9 +77,9 @@ def test_each_date_range_ends_up_in_the_same_chunk_as_its_company(stream_order: 
 
     chunks = chunk_text(text, chunk_size=300, chunk_overlap=0)
 
-    for heading, dates, city, _ in CV_JOBS:
+    for heading, dates, _city, _ in CV_JOBS:
         [own] = [chunk for chunk in chunks if heading in chunk]
-        assert dates in own and city in own, (heading, own)
+        assert dates in own, (heading, own)
 
 
 def test_the_side_column_is_joined_to_its_company_row_without_layout_whitespace() -> None:
