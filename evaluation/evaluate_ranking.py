@@ -32,6 +32,13 @@ from evaluation.ranking_corpus import build_documents
 DATASET_PATH = Path(__file__).parent / "ranking_dataset.jsonl"
 HELDOUT_PATH = Path(__file__).parent / "ranking_heldout.jsonl"
 """Questions written after the ranking design was fixed and never used to choose it."""
+DOCS_HELDOUT_PATH = Path(__file__).parent / "docs_heldout.jsonl"
+"""Held-out questions on real prose: this repository's AGENTS.md and two plan documents.
+
+Run with ``--dataset evaluation/docs_heldout.jsonl --files AGENTS.md
+docs/plans/phase-4.md docs/plans/phase-5.md`` against a scratch tenant.
+"""
+CONTENT_TYPES = {".md": "text/markdown", ".txt": "text/plain", ".pdf": "application/pdf"}
 KS = (1, 5, 10)
 SEARCH_DEPTH = 20
 """How deep a search looks. Beyond it a chunk counts as not found."""
@@ -75,6 +82,16 @@ def load_cases(path: Path = DATASET_PATH) -> list[Case]:
 def upload_corpus(client: HttpClient) -> None:
     for name, text in build_documents().items():
         response = client.post("/documents", files={"file": (name, text.encode(), "text/markdown")})
+        response.raise_for_status()
+
+
+def upload_files(client: HttpClient, paths: list[Path]) -> None:
+    """Upload real files instead of the synthetic corpus."""
+    for path in paths:
+        content_type = CONTENT_TYPES[path.suffix.lower()]
+        response = client.post(
+            "/documents", files={"file": (path.name, path.read_bytes(), content_type)}
+        )
         response.raise_for_status()
 
 
@@ -164,6 +181,12 @@ def main() -> None:
     parser.add_argument("--agent", action="store_true", help="also run POST /agent")
     parser.add_argument("--skip-upload", action="store_true", help="the corpus is already uploaded")
     parser.add_argument(
+        "--files",
+        type=Path,
+        nargs="+",
+        help="upload these files instead of the synthetic corpus",
+    )
+    parser.add_argument(
         "--dataset",
         type=Path,
         default=DATASET_PATH,
@@ -175,7 +198,7 @@ def main() -> None:
     cases = load_cases(args.dataset)
     with httpx.Client(base_url=args.base_url, headers=headers, timeout=300.0) as client:
         if not args.skip_upload:
-            upload_corpus(client)
+            upload_files(client, args.files) if args.files else upload_corpus(client)
         by_mode: dict[str, Any] = {mode: evaluate_search(client, cases, mode) for mode in MODES}
         print(format_report(by_mode))
         print("\nQuestions whose expected chunks are not all in the hybrid top 5:")

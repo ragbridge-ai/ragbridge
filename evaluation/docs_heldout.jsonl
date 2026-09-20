@@ -1,0 +1,8 @@
+{"id": "d1", "length": "long", "product_name": "without", "facts": "one", "question": "How many vCPUs and how much RAM does the CPX22 have?", "expected": ["Hetzner CPX22**: 2 vCPU, 4 GB RAM"]}
+{"id": "d2", "length": "long", "product_name": "without", "facts": "one", "question": "What heartbeat interval does arq use by default, and why did that hide a crashed worker?", "expected": ["arq's default heartbeat is 3600 seconds"]}
+{"id": "d3", "length": "long", "product_name": "without", "facts": "one", "question": "Which command runs the type check?", "expected": ["uv run mypy"]}
+{"id": "d4", "length": "long", "product_name": "without", "facts": "one", "question": "Which actions is the assistant never allowed to do with the repository?", "expected": ["Never merge, push to `main`, force-push, create tags,"]}
+{"id": "d5", "length": "long", "product_name": "without", "facts": "one", "question": "Why is LangGraph not used for the agent loop?", "expected": ["The agent loop is hand-rolled, not LangGraph"]}
+{"id": "d6", "length": "long", "product_name": "without", "facts": "one", "question": "Which tools does the MCP server expose, and which one is deliberately left out?", "expected": ["MCP exposes `search_documents`, `ask`, and `list_documents`"]}
+{"id": "d7", "length": "long", "product_name": "without", "facts": "one", "question": "Which package manager replaces pip in this project?", "expected": ["never use plain `pip` or `requirements.txt`"]}
+{"id": "d8", "length": "long", "product_name": "without", "facts": "one", "question": "Which operating system runs on the production server?", "expected": ["Ubuntu 24"]}
