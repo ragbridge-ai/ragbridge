@@ -14,6 +14,7 @@ from ragbridge.auth import get_tenant
 from ragbridge.cache import Cache, get_cache
 from ragbridge.chat import Chatter, get_chatter
 from ragbridge.config import Settings, get_settings
+from ragbridge.context import build_context
 from ragbridge.db.models import Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
@@ -93,6 +94,10 @@ async def answer_query(
     an LLM call and would otherwise never appear in a trace at all
     (decision 8, docs/plans/phase-3.md).
 
+    The model is given the chunks in document order, labelled and with gap
+    notes (``build_context``), so a bullet is read under its own heading;
+    ``sources`` keeps them in score order.
+
     ``explain`` is part of the cache key: an answer cached without it
     must not be served to a request that asked for the retrieval detail,
     nor the reverse. With ``explain`` each source also says which arm
@@ -125,7 +130,7 @@ async def answer_query(
         )
         rows = await reranker.rerank(request.question, candidates, request.top_k)
 
-        answer = await chatter.answer(request.question, [chunk.content for chunk, _, _ in rows])
+        answer = await chatter.answer(request.question, build_context(rows))
         sources = [
             ExplainableSource(
                 document_id=document.id,

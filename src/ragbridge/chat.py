@@ -16,8 +16,22 @@ from ragbridge.config import Settings, get_settings
 SYSTEM_PROMPT = (
     "You answer questions using only the context provided below. "
     "If the context does not contain the answer, say you don't know - "
-    "do not make up information."
+    "do not make up information. "
+    "The context is made of labelled excerpts, in the order they appear in their "
+    "document; a note in brackets says which parts are not shown between two excerpts. "
+    "A bullet or line belongs to the heading ABOVE it, never to the heading below it. "
+    "If an excerpt begins with bullets and no heading, they belong to the last heading "
+    "of the excerpt before it, unless a note says text is missing between them."
 )
+
+
+def build_messages(question: str, context: list[str]) -> list[dict[str, str]]:
+    """The chat messages for ``question``, given the context entries in reading order."""
+    context_text = "\n\n".join(context) if context else "(no relevant documents found)"
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"Context:\n{context_text}\n\nQuestion: {question}"},
+    ]
 
 
 class Chatter(Protocol):
@@ -33,11 +47,7 @@ class LiteLLMChatter:
         self._settings = settings
 
     async def answer(self, question: str, context: list[str]) -> str:
-        context_text = "\n\n".join(context) if context else "(no relevant documents found)"
-        messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"Context:\n{context_text}\n\nQuestion: {question}"},
-        ]
+        messages = build_messages(question, context)
 
         model = self._settings.chat_model
         api_base = self._settings.ollama_base_url if model.startswith("ollama/") else None
