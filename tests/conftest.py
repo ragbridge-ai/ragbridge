@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -92,12 +93,17 @@ def _reset_database() -> None:
 
 
 @pytest.fixture
-def app_with_database() -> FastAPI:
+def app_with_database() -> Iterator[FastAPI]:
     """A FastAPI app wired to the real test database.
 
     Reads ``Settings`` the normal way (environment, then ``.env``, then the
     default), so it points at whatever database is actually available -
     docker-compose locally, the ``postgres`` service container in CI.
+
+    Its engine is disposed after the test. Without that, every test left its pooled
+    connections open until garbage collection, and the suite peaked at Postgres's
+    default limit of 100 connections: one more test, or any other client of the same
+    server, produced "sorry, too many clients already".
     """
     app = create_app()
     settings = Settings()
@@ -118,7 +124,8 @@ def app_with_database() -> FastAPI:
             "settings": settings,
         }
     )
-    return app
+    yield app
+    asyncio.run(engine.dispose())
 
 
 async def _create_tenant_with_key(
@@ -162,7 +169,7 @@ def second_tenant_with_key(app_with_database: FastAPI) -> str:
 
 
 @pytest.fixture
-def app_with_unreachable_database() -> FastAPI:
+def app_with_unreachable_database() -> Iterator[FastAPI]:
     """A FastAPI app wired to a database that refuses connections.
 
     Points at a closed local port. Connecting to a port nothing listens
@@ -175,4 +182,5 @@ def app_with_unreachable_database() -> FastAPI:
     )
     engine = create_engine(unreachable)
     app.state.session_factory = create_session_factory(engine)
-    return app
+    yield app
+    asyncio.run(engine.dispose())
