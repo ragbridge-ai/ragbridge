@@ -41,6 +41,15 @@ see [ADR 0003](adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pass
 instead of `RETRIEVAL_MODE`'s default. Only documents belonging to the calling
 tenant's key are ever searched.
 
+### How the keyword search reads your text
+
+Retrieval is hybrid: a vector search plus a keyword (full-text) search. The keyword search
+treats a query of **fewer than four words** as keywords, and every word must appear in one
+chunk. A longer query is treated as a question, and a chunk matches when it holds *any* of
+its words, ranked by how many. A quoted phrase (`"refund policy"`), `or` and `-word` are
+always used exactly as typed. Without this, a long question would match no chunk at all and
+the keyword search would contribute nothing.
+
 ## See why a chunk was found
 
 Add `"explain": true` to a `/query` or `/search` request to get, for every returned
