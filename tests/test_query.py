@@ -384,3 +384,54 @@ def test_query_gives_the_model_one_excerpt_in_document_order_but_sources_in_scor
     # All four chunks are neighbours, so they reach the model as one continuous excerpt.
     assert recorder.context == ["[doc.txt, chunks 0-3]\n" + "\n".join(PARAGRAPHS)]
     assert sorted(source_order) == [0, 1, 2, 3]
+
+
+SIX = [
+    f"Section {name}: a block of a document, written long enough that it stays a chunk of its"
+    f" own instead of being merged with a neighbour, number {index}."
+    for index, name in enumerate(["One", "Two", "Three", "Four", "Five", "Six"])
+]
+
+
+def _query_top_one(app: FastAPI, key: str, settings: Settings) -> tuple[list[str], list[int]]:
+    """Ask for one chunk; return what the model received and which chunk was the source."""
+    recorder = _RecordingChatter()
+    app.dependency_overrides[get_chatter] = lambda: recorder
+    app.dependency_overrides[get_settings] = lambda: settings
+    client = _client(app, key)
+    files = {"file": ("doc.txt", "\n\n".join(SIX).encode(), "text/plain")}
+    assert client.post("/documents", files=files).status_code == 201
+    body = client.post("/query", json={"question": "Which section?", "top_k": 1}).json()
+    return recorder.context, [source["chunk_index"] for source in body["sources"]]
+
+
+def test_query_gives_the_model_the_neighbours_of_the_retrieved_chunk_as_one_excerpt(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    context, sources = _query_top_one(app_with_database, tenant_with_key, Settings())
+
+    [index] = sources
+    first, last = max(0, index - 1), min(len(SIX) - 1, index + 1)
+    span = f"chunk {first}" if first == last else f"chunks {first}-{last}"
+    assert context == [f"[doc.txt, {span}]\n" + "\n".join(SIX[first : last + 1])]
+    assert len(sources) == 1, "the response still lists only what retrieval returned"
+
+
+def test_neighbours_can_be_turned_off(app_with_database: FastAPI, tenant_with_key: str) -> None:
+    context, sources = _query_top_one(
+        app_with_database, tenant_with_key, Settings(answer_context_neighbours=0)
+    )
+
+    [index] = sources
+    assert context == [f"[doc.txt, chunk {index}]\n{SIX[index]}"]
+
+
+def test_neighbours_are_dropped_when_the_character_budget_is_too_small(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    context, sources = _query_top_one(
+        app_with_database, tenant_with_key, Settings(answer_context_max_chars=10)
+    )
+
+    [index] = sources
+    assert context == [f"[doc.txt, chunk {index}]\n{SIX[index]}"]
