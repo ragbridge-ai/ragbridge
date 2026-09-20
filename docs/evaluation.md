@@ -354,6 +354,55 @@ Hybrid mode, recall@5 / MRR, `nomic-embed-text`, 2026-09-20:
   model on one machine, one run per row; retrieval itself varies by about one chunk between runs.
   Reproduce with `RERANK_ENABLED=true RERANK_BACKEND=chat` on the server and the commands above.
 
+#### Does the chat reranker help or hurt? Paraphrases, window and scoring (measured)
+
+`RERANK_BACKEND=chat` asks the model for **one digit** per chunk (0 no, 1 partly, 2 the answer is in
+it) and returns the scores 1/3, 2/3 and 1.0 for those digits, and **0.0 for a chunk that was not rated
+at all** (fused position beyond `RERANK_CANDIDATES`), so a chunk the judge said "no" to (0.333) scores
+above one it never saw (0.0). Ties keep the fused order. Two things follow, and a reported question
+showed both: `Which interpreter release does the codebase target?` (answer: the table row
+`| Language | Python 3.12 |`) has the table chunk at fused position 19 or 20, outside the 10 rated ones, and
+a "release checklist" chunk at position 4 was rated 2 (the only 2) and moved to position 1.
+
+To see whether that is typical, 21 paraphrase questions that share almost no word with their answer
+(`evaluation/mixed_paraphrase.jsonl`, `docs_paraphrase.jsonl`; 9 of them about table rows) were written
+before anything was measured, and the rest of the held-out sets served as a regression check
+(75 questions in all). The candidates are the whole fused list (up to 40), as the app hands them to
+the reranker. Variants: the digit at 10 candidates (the current behaviour) and at 20; the same with the
+*expected rating*, the sum of `digit x probability` over the digits 0, 1 and 2 (Ollama returns the
+probabilities; LiteLLM does not pass them through, so this was called directly), at 10 and at 20; and a
+stricter prompt ("2 only if the passage states the answer itself").
+
+MRR (recall@5 in brackets), `qwen2.5:7b` as the judge, 2026-09-20:
+
+| Set (questions) | no rerank | digit, 10 (current) | digit, 20 | expected, 10 | **expected, 20** | strict digit, 20 |
+|---|---|---|---|---|---|---|
+| mixed paraphrases (12) | 0.526 (0.75) | 0.665 (0.75) | 0.665 (0.75) | 0.727 (0.75) | **0.917 (1.00)** | 0.701 (0.83) |
+| docs paraphrases (9) | 0.252 (0.44) | 0.259 (0.44) | 0.466 (0.67) | 0.424 (0.44) | **0.588 (0.78)** | 0.471 (0.56) |
+| mixed held-out (18) | 0.917 (1.00) | 1.000 (1.00) | | | 1.000 (1.00) | |
+| docs held-out (8) | 0.755 (0.88) | 0.818 (0.88) | | | 0.880 (0.88) | |
+| synthetic held-out (12) | 0.725 (0.96) | 0.958 (1.00) | | | 0.892 (1.00) | |
+| original 16 | 0.596 (0.97) | 0.969 (1.00) | | | 1.000 (1.00) | |
+| added time per question | | 6 to 11 s | 8 to 11 s | 6 to 9 s | 6 to 20 s | 8 to 9 s |
+
+Whether the expected chunk moved up or down against no reranking (by its rank; blank cells were not
+run): the current setting moved 25 up and 3 down (two of those are the second chunk of a two-chunk
+question changing places with the first, both still in the top 2); expected-20 moved 35 up and 4 down.
+
+- **The current setting (digit, 10) helps where the wording overlaps and does almost nothing on
+  paraphrases**: on the docs paraphrases MRR 0.252 to 0.259, one question up, one down.
+- **A wider window alone fixes some, not the reported one**: with 20 candidates and the digit, three
+  docs paraphrases improve (MRR 0.259 to 0.466) but the reported question does not move.
+- **The expected rating fixes it better**: the reported question goes from position 19 to 3, and
+  table rows at fused positions 12 to 16 come to the top (mixed paraphrases: recall@5 0.75 to 1.00). It is not free: it costs more time with 20 chunks, it needs Ollama's own API for the
+  probabilities, and it moved `h7` from 2nd to 5th and `t9` from 2nd to 3rd. On the synthetic held-out set
+  it is worse than the digit at 10 (MRR 0.892 against 0.958).
+- **The stricter prompt is not better** than the plain one at the same window.
+- Limits: 75 questions on invented corpora and this repository's documents, one model on one
+  machine, one run per cell; the variant was chosen on the same 21 paraphrases it is scored on, so the
+  paraphrase gain is optimistic. Nothing here changes the default: the reranker stays off unless
+  `RERANK_ENABLED=true`.
+
 ### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
 
 2026-09-19, on an **Apple M1 Pro with 16 GB** (macOS 27.0, Ollama 0.34.1, Docker Desktop's VM
