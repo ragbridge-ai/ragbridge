@@ -41,6 +41,16 @@ see [ADR 0003](adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pass
 instead of `RETRIEVAL_MODE`'s default. Only documents belonging to the calling
 tenant's key are ever searched.
 
+### How the keyword search reads your text
+
+Retrieval is hybrid: a vector search plus a keyword (full-text) search. The keyword search
+first runs your query exactly as typed, so **every word must appear in one chunk**, which is
+what makes an exact term such as an error code findable. Only if that finds nothing does it
+retry as an **OR of the words**, ranked by how many of them each chunk holds; a query that
+already matches is never loosened. A quoted phrase (`"refund policy"`) or a `-word` is
+never relaxed, because that would drop what you asked for. Without the retry, one word that
+is in no document, or a long question, would make the keyword search match nothing at all.
+
 ### What the answer model reads
 
 `/query` does not hand the model the retrieved chunks as separate blocks in score order. A

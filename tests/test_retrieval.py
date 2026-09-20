@@ -19,8 +19,8 @@ from ragbridge.retrieval import (
     SearchResult,
     hybrid_search,
     hybrid_search_with_provenance,
-    keyword_query,
     keyword_search,
+    or_fallback_query,
     reciprocal_rank_fusion,
     vector_search,
 )
@@ -296,50 +296,41 @@ def test_hybrid_search_returns_the_same_rows_as_the_provenance_version(
     ]
 
 
-# --- natural-language questions in the keyword arm ---------------------------------
+# --- the keyword arm falls back to an OR of the words --------------------------------
 
 
-@pytest.mark.parametrize(
-    "query", ["ERR_4021", "refund policy", "Company B search", "shipping takes long"]
-)
-def test_short_queries_reach_the_keyword_arm_unchanged(query: str) -> None:
-    """Under four words, every word still has to match: the precise behaviour
-    that made an error code findable in the first place.
-    """
-    assert keyword_query(query) == query
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        '"refund policy" for damaged items in transit',
-        "refund or return policy for damaged items",
-        "refund policy for damaged items -shipping",
-    ],
-)
-def test_explicit_queries_are_never_rewritten(query: str) -> None:
-    """A quoted phrase, ``or`` and ``-word`` are the person asking for precision."""
-    assert keyword_query(query) == query
-
-
-def test_a_long_question_becomes_an_or_of_its_words() -> None:
-    question = "Where did the engineer work at Company B, when did that job start?"
-
-    rewritten = keyword_query(question)
-
-    assert rewritten == (
-        "Where or did or the or engineer or work or at or Company or B or when or did or that"
-        " or job or start"
+def test_the_fallback_is_an_or_of_the_words_of_the_query() -> None:
+    assert or_fallback_query("docker container orchestration") == (
+        "docker or container or orchestration"
     )
 
 
-def test_a_long_question_keeps_identifiers_whole() -> None:
-    assert "ERR_4021" in keyword_query("Why does the server say ERR_4021 when my upload is big?")
+def test_the_fallback_keeps_identifiers_whole_and_drops_punctuation() -> None:
+    assert or_fallback_query("ERR_4021, upload failed!") == "ERR_4021 or upload or failed"
+
+
+def test_a_typed_or_is_not_kept_as_a_word_of_the_fallback() -> None:
+    assert or_fallback_query("refund OR return policy") == "refund or return or policy"
+
+
+def test_a_single_word_has_no_fallback() -> None:
+    """An OR of one word is the same query."""
+    assert or_fallback_query("ERR_4021") is None
+
+
+@pytest.mark.parametrize(
+    "query", ['"refund policy" damaged', "refund policy -shipping", 'a "b c"', "x y -z"]
+)
+def test_a_quoted_phrase_or_an_exclusion_has_no_fallback(query: str) -> None:
+    """Dropping a phrase or an exclusion would return what the person ruled out."""
+    assert or_fallback_query(query) is None
 
 
 LONG_QUESTION = "How are invoices reconciled, and are refunds for damaged parcels approved quickly?"
 INVOICE_CHUNK = "Invoices are reconciled automatically every month by the billing service."
 REFUND_CHUNK = "Refunds for damaged parcels are approved within five days."
+ARCHIVE_CHUNK = "Invoices for damaged parcels are archived after a year."
+DOCKER_CHUNK = "Services are packaged as Docker images and released with one container tool."
 
 
 def _upload(client: TestClient, name: str, text: str) -> None:
@@ -357,30 +348,89 @@ def _keyword_contents(app: FastAPI, key: str, query: str) -> list[str]:
     return asyncio.run(run())
 
 
+def _client_with(app: FastAPI, key: str, chunks: dict[str, str]) -> None:
+    client = TestClient(app, headers={"Authorization": f"Bearer {key}"})
+    for name, text in chunks.items():
+        _upload(client, name, text)
+
+
 def test_a_question_spread_over_two_chunks_finds_both_in_the_keyword_arm(
     app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
-    """No chunk holds every word of the question, so the old every-word-must-match
-    query returned nothing and hybrid search quietly became vector-only.
+    """No chunk holds every word of the question, so the strict query finds nothing;
+    the fallback finds the chunks that hold some of the words.
     """
-    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
-    _upload(client, "invoices.txt", INVOICE_CHUNK)
-    _upload(client, "refunds.txt", REFUND_CHUNK)
+    _client_with(
+        app_with_database, tenant_with_key, {"a.txt": INVOICE_CHUNK, "b.txt": REFUND_CHUNK}
+    )
 
     found = _keyword_contents(app_with_database, tenant_with_key, LONG_QUESTION)
 
     assert set(found) == {INVOICE_CHUNK, REFUND_CHUNK}
 
 
-def test_a_short_query_still_requires_every_word(
+def test_a_query_with_a_word_that_appears_nowhere_still_finds_its_other_words(
     app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
-    """The same two chunks, a short query: no chunk has both words, so still nothing."""
-    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
-    _upload(client, "invoices.txt", INVOICE_CHUNK)
-    _upload(client, "refunds.txt", REFUND_CHUNK)
+    """The reported case: three words, one of them in no document, used to find nothing."""
+    _client_with(
+        app_with_database, tenant_with_key, {"a.txt": INVOICE_CHUNK, "b.txt": REFUND_CHUNK}
+    )
 
-    assert _keyword_contents(app_with_database, tenant_with_key, "invoices parcels") == []
+    found = _keyword_contents(app_with_database, tenant_with_key, "invoices refunds bananas")
+
+    assert set(found) == {INVOICE_CHUNK, REFUND_CHUNK}
+
+
+def test_a_natural_question_containing_or_still_finds_chunks(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """A typed ``or`` used to make the whole query strict, so nothing matched."""
+    _client_with(
+        app_with_database, tenant_with_key, {"a.txt": DOCKER_CHUNK, "b.txt": INVOICE_CHUNK}
+    )
+    question = (
+        "Which company did the candidate use Docker at, and did they use Kubernetes"
+        " or another container tool there?"
+    )
+
+    assert _keyword_contents(app_with_database, tenant_with_key, question) == [DOCKER_CHUNK]
+
+
+def test_a_query_that_matches_strictly_is_not_loosened(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """Both words are in the invoice chunk, so only it is returned, although another
+    chunk holds one of them: the OR fallback runs only when nothing matched.
+    """
+    _client_with(
+        app_with_database,
+        tenant_with_key,
+        {"a.txt": INVOICE_CHUNK, "b.txt": ARCHIVE_CHUNK, "c.txt": REFUND_CHUNK},
+    )
+
+    assert _keyword_contents(app_with_database, tenant_with_key, "invoices reconciled") == [
+        INVOICE_CHUNK
+    ]
+
+
+def test_a_quoted_phrase_that_matches_nothing_is_not_turned_into_an_or(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    _client_with(app_with_database, tenant_with_key, {"a.txt": REFUND_CHUNK})
+
+    assert _keyword_contents(app_with_database, tenant_with_key, '"parcels damaged"') == []
+
+
+def test_an_exclusion_is_not_dropped_by_the_fallback(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """Every chunk about refunds also says "damaged", so this finds nothing; a fallback
+    that ignored the exclusion would return the very chunk the person ruled out.
+    """
+    _client_with(app_with_database, tenant_with_key, {"a.txt": REFUND_CHUNK})
+
+    assert _keyword_contents(app_with_database, tenant_with_key, "refunds -damaged") == []
 
 
 def test_a_chunk_found_by_both_arms_outscores_any_single_arm_chunk(
@@ -404,4 +454,25 @@ def test_a_chunk_found_by_both_arms_outscores_any_single_arm_chunk(
     ]
     assert single_arm, "the other chunk should be found by one arm only"
     assert found.fused_score > max(single_arm)
+    assert found.fused_score > 1 / 61
+
+
+def test_a_short_query_with_an_absent_word_still_gets_a_chunk_found_by_both_arms(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """``bananas`` is in no chunk, so the strict keyword query used to find nothing."""
+    rows, provenance = _provenance_for(
+        app_with_database, tenant_with_key, "ERR_4021 bananas", mode="hybrid"
+    )
+
+    [error_row] = [row for row in rows if row[0].content == ERROR_CHUNK]
+    found = provenance[error_row[0].id]
+    assert found.keyword_rank == 1
+    assert found.vector_rank is not None
+    single_arm = [
+        p.fused_score
+        for p in provenance.values()
+        if (p.vector_rank is None) != (p.keyword_rank is None)
+    ]
+    assert found.fused_score > max(single_arm, default=0.0)
     assert found.fused_score > 1 / 61

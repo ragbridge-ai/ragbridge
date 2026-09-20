@@ -78,42 +78,34 @@ async def vector_search(
     return [(chunk, document, 1 - distance) for chunk, document, distance in result.all()]
 
 
-NATURAL_LANGUAGE_MIN_WORDS = 4
-"""From this many words on, an unmarked query is treated as a question.
-
-Shorter queries ("ERR_4021", "refund policy") are keywords, and every one of
-them has to match: that precision is what makes an exact token findable.
-"""
-
 _WORD = re.compile(r"\w+")
-_EXPLICIT_SYNTAX = re.compile(r'"|\bor\b|(?:^|\s)-\S', re.IGNORECASE)
+_STRICT_SYNTAX = re.compile(r'"|(?:^|\s)-\S')
+"""A quoted phrase or a ``-word``: the person is ruling something in or out."""
 
 
-def keyword_query(query: str) -> str:
-    """Return the text ``keyword_search`` hands to ``websearch_to_tsquery``.
+def or_fallback_query(query: str) -> str | None:
+    """The query as an OR of its words, or ``None`` when there is no fallback.
 
-    ``websearch_to_tsquery`` requires *every* word of a query to be in one
-    chunk. That suits a keyword, but a long natural-language question always
-    contains words the answer does not (``work``, ``job``, ``start``): no
-    chunk matches, the keyword arm returns nothing, and hybrid search
-    silently becomes vector-only.
+    ``websearch_to_tsquery`` requires *every* word of a query to be in one chunk.
+    That is what makes an exact term findable, but it also means one word that is
+    in no document - ``orchestration`` in ``docker container orchestration``, or
+    ``work`` and ``job`` in a long question - makes the whole query match nothing,
+    and hybrid search silently becomes vector-only.
 
-    So a query of ``NATURAL_LANGUAGE_MIN_WORDS`` or more words is rewritten
-    as an OR of its words, which ``ts_rank`` then ranks by how many of them
-    a chunk contains. Left exactly as typed: short queries, and anything
-    with a quoted phrase, ``or`` or ``-word`` - the person asking for a
-    specific behaviour.
+    ``keyword_search`` therefore runs the query as typed first, and only when that
+    finds nothing runs this OR version, which ``ts_rank`` orders by how many of the
+    words a chunk holds. A query that already matches is never loosened.
 
-    The rewrite uses ``websearch_to_tsquery``'s own ``or``, so stopwords
-    and stemming are still handled by PostgreSQL. ``ts_rank`` does not know
-    how common a word is, so a common word adds some noise; reciprocal rank
-    fusion with the vector arm keeps that from deciding the result.
+    No fallback for a quoted phrase or a ``-word``: an OR would drop the phrase or
+    return the very chunks the exclusion ruled out. A typed ``or`` is dropped from
+    the words, since the words are joined by ``or`` anyway, and a single word has
+    nothing to relax.
     """
-    if _EXPLICIT_SYNTAX.search(query):
-        return query
-    words = _WORD.findall(query)
-    if len(words) < NATURAL_LANGUAGE_MIN_WORDS:
-        return query
+    if _STRICT_SYNTAX.search(query):
+        return None
+    words = [word for word in _WORD.findall(query) if word.lower() != "or"]
+    if len(words) < 2:
+        return None
     return " or ".join(words)
 
 
@@ -124,15 +116,25 @@ async def keyword_search(
 
     Uses ``websearch_to_tsquery``, the parser built for text a user actually
     types (bare words, ``"quoted phrases"``, ``or``, ``-excluded``) - unlike
-    ``to_tsquery`` it never raises on a plain sentence. The query text goes
-    through ``keyword_query`` first, so a long question matches chunks that
-    hold *some* of its words instead of none. Score is
-    ``ts_rank``, PostgreSQL's own relevance measure for a tsquery match
-    against a tsvector. The GIN index behind ``@@`` is an exact match, not
-    an approximation, so - unlike ``vector_search`` - adding a tenant
-    filter here needs no special handling to stay correct.
+    ``to_tsquery`` it never raises on a plain sentence. The query is run as typed;
+    if that finds nothing, it is run once more as an OR of its words
+    (``or_fallback_query``). Score is ``ts_rank``, PostgreSQL's own relevance
+    measure for a tsquery match against a tsvector. The GIN index behind ``@@`` is
+    an exact match, not an approximation, so - unlike ``vector_search`` - adding a
+    tenant filter here needs no special handling to stay correct.
     """
-    tsquery = func.websearch_to_tsquery("english", keyword_query(query))
+    rows = await _keyword_rows(session, query, limit, tenant_id)
+    if not rows:
+        fallback = or_fallback_query(query)
+        if fallback is not None:
+            rows = await _keyword_rows(session, fallback, limit, tenant_id)
+    return rows
+
+
+async def _keyword_rows(
+    session: AsyncSession, query: str, limit: int, tenant_id: uuid.UUID
+) -> list[SearchResult]:
+    tsquery = func.websearch_to_tsquery("english", query)
     rank = func.ts_rank(Chunk.content_tsv, tsquery).label("rank")
     result = await session.execute(
         select(Chunk, Document, rank)

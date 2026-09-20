@@ -52,12 +52,12 @@ Each source shows:
 | `fused score` | The score after merging both searches, before reranking |
 | `before rerank #3` | The chunk's position before the reranker ran. Equal to its final position when reranking is off (the default) |
 
-**A useful thing to know.** The keyword search reads a *short* query (under four words) as
-keywords: **every** word has to appear in one chunk, which is what makes an exact term such
-as an error code findable. A longer question is read as a question: a chunk matches when it
-holds *any* of its words, and chunks with more of them rank higher. A quoted phrase, `or`
-and `-word` are always taken exactly as typed. Try `/search` with `refund business days`
-(all three words must match) and then with a full sentence, and compare the `keyword` badges.
+**A useful thing to know.** The keyword search first runs your query as typed, so **every**
+word has to appear in one chunk, which is what makes an exact term such as an error code
+findable. Only if that finds nothing does it retry as an OR of the words, ranked by how many
+of them a chunk holds. A quoted phrase and `-word` are never relaxed. Try `/search` with
+`docker container orchestration` where "orchestration" is in no document: the keyword
+badges still appear, from the retry.
 
 `/agent` shows no per-chunk detail: it merges chunks found by several searches, so "rank
 in the vector search" has no single meaning there. It shows the searches instead. With a
