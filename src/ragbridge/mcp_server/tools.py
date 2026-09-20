@@ -12,9 +12,13 @@ already an agent and can call ``search_documents`` several times itself.
 
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from typing import Annotated
 
+import pydantic_core
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import CallToolResult, TextContent
+from pydantic import BaseModel
 
 from ragbridge.api.documents import DocumentOut
 from ragbridge.api.query import QueryResponse
@@ -47,6 +51,20 @@ async def _open(client_for: ClientFactory, ctx: Context) -> AsyncIterator[Ragbri
         raise ToolError(str(error)) from error
 
 
+def _result_of(response: BaseModel) -> CallToolResult:
+    """The tool result for ``response``, built the way the SDK builds it for a returned model.
+
+    ``search_documents`` returns a ``CallToolResult`` so that one call can carry more fields
+    (``retrieval``) than the output schema declares, which stays that of ``SearchResponse``:
+    a client that never asks for ``explain`` sees exactly the result it always did. Fields
+    that were never set are left out, so a rank that is ``null`` (the arm did not find the
+    chunk) is kept and a field the server did not send is not invented.
+    """
+    data = response.model_dump(mode="json", by_alias=True, exclude_unset=True)
+    text = pydantic_core.to_json(data, indent=2).decode()
+    return CallToolResult(content=[TextContent(type="text", text=text)], structured_content=data)
+
+
 def build_mcp_server(client_for: ClientFactory, *, name: str = "ragbridge") -> MCPServer:
     """Create an MCP server exposing ragbridge's tenant-scoped search tools."""
     server = MCPServer(name, instructions=INSTRUCTIONS)
@@ -56,12 +74,20 @@ def build_mcp_server(client_for: ClientFactory, *, name: str = "ragbridge") -> M
             "Find the passages in the user's documents that best match a query. "
             "Returns whole text chunks with their source file and a relevance score, "
             "best first. Use this to gather evidence, then reason over it yourself; "
-            "call it again with a different query if the first results miss."
+            "call it again with a different query if the first results miss. "
+            "Set explain=true to also get, for every passage, `retrieval`: the rank the "
+            "vector search and the keyword search gave it (null means that search did not "
+            "find it) and its rank before reranking, plus `candidate_count`. Use it to see "
+            "why a passage did or did not come back."
         )
     )
-    async def search_documents(query: str, ctx: Context, top_k: int = 5) -> SearchResponse:
+    async def search_documents(
+        query: str, ctx: Context, top_k: int = 5, explain: bool = False
+    ) -> Annotated[CallToolResult, SearchResponse]:
         async with _open(client_for, ctx) as client:
-            return await client.search(query, top_k)
+            if explain:
+                return _result_of(await client.search_explained(query, top_k))
+            return _result_of(await client.search(query, top_k))
 
     @server.tool(
         description=(
