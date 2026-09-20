@@ -115,6 +115,21 @@ class Settings(BaseSettings):
     rerank_model: str = "cohere/rerank-v3.5"
     """LiteLLM rerank model name, used only when rerank_enabled is true."""
 
+    answer_context_neighbours: int = 1
+    """How many chunks before and after each retrieved chunk POST /query also gives
+    the answer model, stitched into one continuous excerpt. 0 turns it off.
+
+    A chunk often ends with a heading whose bullets start the next chunk; without
+    its neighbours the model can attach the bullets to the wrong heading.
+    """
+    answer_context_max_chars: int = 6_000
+    """Ceiling, in characters, on the neighbours added to the answer context.
+
+    Neighbours are only added while the context stays within it (the retrieved
+    chunks are always kept): a local model has a small context window, and one that
+    overflows loses the start of the prompt.
+    """
+
     redis_url: str = "redis://localhost:6379/0"
     """Connection used to enqueue and run background jobs (arq)."""
     async_processing_threshold: int = 100_000

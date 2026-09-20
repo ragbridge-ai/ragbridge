@@ -12,8 +12,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
 from ragbridge.db.models import Chunk, Document
 
@@ -252,3 +253,33 @@ async def hybrid_search(
 def _ranks(rows: Sequence[SearchResult]) -> dict[uuid.UUID, int]:
     """Map each chunk id to its 1-based position in ``rows``."""
     return {chunk.id: rank for rank, (chunk, _, _) in enumerate(rows, start=1)}
+
+
+async def fetch_neighbours(
+    session: AsyncSession, rows: list[SearchResult], *, distance: int, tenant_id: uuid.UUID
+) -> dict[tuple[uuid.UUID, int], Chunk]:
+    """The chunks up to ``distance`` before and after each of ``rows``, keyed by
+    ``(document_id, chunk_index)``.
+
+    Only chunks of ``tenant_id`` are returned, and only from the documents the
+    retrieved chunks belong to. The embedding column is not loaded: the answer
+    model needs text, not vectors.
+    """
+    retrieved = {(chunk.document_id, chunk.chunk_index) for chunk, _, _ in rows}
+    wanted = {
+        (document_id, index + offset)
+        for document_id, index in retrieved
+        for offset in range(-distance, distance + 1)
+        if offset != 0 and index + offset >= 0
+    } - retrieved
+    if not wanted:
+        return {}
+    result = await session.scalars(
+        select(Chunk)
+        .options(defer(Chunk.embedding))
+        .where(
+            Chunk.tenant_id == tenant_id,
+            tuple_(Chunk.document_id, Chunk.chunk_index).in_(wanted),
+        )
+    )
+    return {(chunk.document_id, chunk.chunk_index): chunk for chunk in result}

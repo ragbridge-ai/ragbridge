@@ -14,12 +14,12 @@ from ragbridge.auth import get_tenant
 from ragbridge.cache import Cache, get_cache
 from ragbridge.chat import Chatter, get_chatter
 from ragbridge.config import Settings, get_settings
-from ragbridge.context import build_context
+from ragbridge.context import add_neighbours, build_context
 from ragbridge.db.models import Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.rerank import Reranker, get_reranker
-from ragbridge.retrieval import hybrid_search_with_provenance
+from ragbridge.retrieval import fetch_neighbours, hybrid_search_with_provenance
 
 router = APIRouter(tags=["query"])
 
@@ -94,9 +94,10 @@ async def answer_query(
     an LLM call and would otherwise never appear in a trace at all
     (decision 8, docs/plans/phase-3.md).
 
-    The model is given the chunks in document order, labelled and with gap
-    notes (``build_context``), so a bullet is read under its own heading;
-    ``sources`` keeps them in score order.
+    The model is given the retrieved chunks and their neighbours as continuous,
+    labelled excerpts in document order, with gap notes (``build_context``), so a
+    bullet is read under its own heading; ``sources`` lists only what retrieval
+    returned, in score order.
 
     ``explain`` is part of the cache key: an answer cached without it
     must not be served to a request that asked for the retrieval detail,
@@ -130,7 +131,18 @@ async def answer_query(
         )
         rows = await reranker.rerank(request.question, candidates, request.top_k)
 
-        answer = await chatter.answer(request.question, build_context(rows))
+        shown = rows
+        if settings.answer_context_neighbours > 0:
+            neighbours = await fetch_neighbours(
+                session, rows, distance=settings.answer_context_neighbours, tenant_id=tenant.id
+            )
+            shown = add_neighbours(
+                rows,
+                neighbours,
+                distance=settings.answer_context_neighbours,
+                max_chars=settings.answer_context_max_chars,
+            )
+        answer = await chatter.answer(request.question, build_context(shown))
         sources = [
             ExplainableSource(
                 document_id=document.id,
