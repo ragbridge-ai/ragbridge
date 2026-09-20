@@ -117,6 +117,9 @@ def test_delete_document_returns_404_when_missing(
 def test_upload_text_document_creates_chunks(
     app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
+    # These two paragraphs are shorter than the default CHUNK_MIN_SIZE and would be
+    # merged; this test is about storing one chunk per paragraph.
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(chunk_min_size=0)
     client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
     content = b"First paragraph.\n\nSecond paragraph."
 
@@ -257,3 +260,40 @@ def test_get_document_returns_404_when_missing(
     response = client.get(f"/documents/{uuid.uuid4()}")
 
     assert response.status_code == 404
+
+
+MARKDOWN_WITH_TINY_PARAGRAPHS = (
+    "# Handbook\n\nShort note.\n\n"
+    + "This paragraph is long enough to stand on its own as a useful chunk. " * 6
+)
+
+
+def _stored_chunks(app: FastAPI, key: str, settings: Settings) -> list[str]:
+    app.dependency_overrides[get_settings] = lambda: settings
+    client = TestClient(app, headers={"Authorization": f"Bearer {key}"})
+    upload = client.post(
+        "/documents",
+        files={"file": ("h.md", MARKDOWN_WITH_TINY_PARAGRAPHS.encode(), "text/markdown")},
+    )
+    session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+    chunks = asyncio.run(fetch_chunks(session_factory, uuid.UUID(upload.json()["id"])))
+    return [chunk.content for chunk in chunks]
+
+
+def test_tiny_paragraphs_are_merged_into_the_next_chunk_on_upload(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    stored = _stored_chunks(app_with_database, tenant_with_key, Settings(chunk_min_size=100))
+
+    assert len(stored) == 1
+    assert stored[0].startswith("# Handbook\n\nShort note.")
+    assert "long enough to stand on its own" in stored[0]
+
+
+def test_chunk_min_size_zero_keeps_every_paragraph_as_its_own_chunk(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    stored = _stored_chunks(app_with_database, tenant_with_key, Settings(chunk_min_size=0))
+
+    assert stored[:2] == ["# Handbook", "Short note."]
+    assert len(stored) == 3

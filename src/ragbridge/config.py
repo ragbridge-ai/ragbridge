@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     """Maximum characters per chunk, before overlap. See ragbridge.chunking."""
     chunk_overlap: int = 200
     """Characters repeated between consecutive chunks of the same paragraph."""
+    chunk_min_size: int = 100
+    """A chunk shorter than this is merged into its neighbour at ingestion.
+
+    A name, a city or a lone URL says almost nothing on its own yet competes
+    with real content in search. 0 turns merging off. A merged chunk can
+    exceed ``chunk_size`` by less than this. Only documents uploaded after a
+    change are affected: existing chunks are not rebuilt.
+    """
 
     retrieval_mode: Literal["hybrid", "vector", "keyword"] = "hybrid"
     """Which retrieval arm(s) POST /query uses, unless the request overrides it.
@@ -145,6 +153,19 @@ class Settings(BaseSettings):
     output and answering needs good prose, so an installation can point
     this at a stronger model without changing the answering model.
     """
+
+    @model_validator(mode="after")
+    def _check_chunk_settings(self) -> Self:
+        """Fail at startup, not with an HTTP 500 on the first upload.
+
+        ``chunk_text`` enforces the same two rules; checking them here as
+        well means a wrong value stops the app from starting.
+        """
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("CHUNK_OVERLAP must be smaller than CHUNK_SIZE")
+        if self.chunk_min_size >= self.chunk_size:
+            raise ValueError("CHUNK_MIN_SIZE must be smaller than CHUNK_SIZE")
+        return self
 
     @model_validator(mode="after")
     def _reject_shipped_defaults_in_production(self) -> Self:

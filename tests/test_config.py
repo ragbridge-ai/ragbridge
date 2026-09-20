@@ -90,3 +90,19 @@ def test_the_playground_can_be_disabled_from_the_environment(
     monkeypatch.setenv("ENABLE_PLAYGROUND", "false")
 
     assert Settings(database_url=SHIPPED_URL).enable_playground is False
+
+
+def test_chunk_min_size_defaults_to_one_hundred(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CHUNK_MIN_SIZE", raising=False)
+
+    assert Settings(database_url=SHIPPED_URL).chunk_min_size == 100
+
+
+def test_chunk_min_size_must_be_smaller_than_chunk_size() -> None:
+    with pytest.raises(ValidationError, match="CHUNK_MIN_SIZE"):
+        Settings(database_url=SHIPPED_URL, chunk_size=200, chunk_overlap=20, chunk_min_size=200)
+
+
+def test_chunk_overlap_must_be_smaller_than_chunk_size_at_startup() -> None:
+    with pytest.raises(ValidationError, match="CHUNK_OVERLAP"):
+        Settings(database_url=SHIPPED_URL, chunk_size=200, chunk_overlap=200)

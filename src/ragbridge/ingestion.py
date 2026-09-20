@@ -57,7 +57,10 @@ async def ingest_document(
     chunk_metadata: list[dict[str, int]] = []
     for page_number, page_text in enumerate(pages, start=1):
         for chunk_content in chunk_text(
-            page_text, chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap
+            page_text,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            min_size=settings.chunk_min_size,
         ):
             chunk_contents.append(chunk_content)
             chunk_metadata.append({"page": page_number} if is_pdf else {})
