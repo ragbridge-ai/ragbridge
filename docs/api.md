@@ -54,11 +54,12 @@ that a bullet belongs to the heading above it.
 ### How the keyword search reads your text
 
 Retrieval is hybrid: a vector search plus a keyword (full-text) search. The keyword search
-treats a query of **fewer than four words** as keywords, and every word must appear in one
-chunk. A longer query is treated as a question, and a chunk matches when it holds *any* of
-its words, ranked by how many. A quoted phrase (`"refund policy"`), `or` and `-word` are
-always used exactly as typed. Without this, a long question would match no chunk at all and
-the keyword search would contribute nothing.
+first runs your query exactly as typed, so **every word must appear in one chunk**, which is
+what makes an exact term such as an error code findable. Only if that finds nothing does it
+retry as an **OR of the words**, ranked by how many of them each chunk holds; a query that
+already matches is never loosened. A quoted phrase (`"refund policy"`) or a `-word` is
+never relaxed, because that would drop what you asked for. Without the retry, one word that
+is in no document, or a long question, would make the keyword search match nothing at all.
 
 ## See why a chunk was found
 

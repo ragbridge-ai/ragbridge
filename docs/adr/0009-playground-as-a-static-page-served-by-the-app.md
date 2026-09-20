@@ -69,8 +69,10 @@ the chunks retrieved from your own PDF.
   joins every stem with AND (`'mani' & 'busi' & 'day' & 'refund' & 'take'`), and no chunk
   holds them all; the short query `refund business days` matched. This is existing
   retrieval behaviour that the playground made visible. It was not changed here; it was
-  fixed afterwards (2026-09-20): a question of four or more words is now an OR of its words,
-  see `keyword_query` in `src/ragbridge/retrieval.py`.
+  fixed afterwards (2026-09-20): first a question of four or more words became an OR of its
+  words, then (the same day, after that rule missed queries containing `or` and short queries
+  with an absent word) the query is run as typed and retried as an OR only when it matches
+  nothing, see `or_fallback_query` in `src/ragbridge/retrieval.py`.
 
 ## Consequences
 
