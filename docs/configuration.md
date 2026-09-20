@@ -20,6 +20,7 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `RETRIEVAL_MODE` | `hybrid` | `hybrid` (vector + keyword, merged with reciprocal rank fusion), `vector`, or `keyword` |
 | `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
 | `KEYWORD_MAX_TERM_FREQUENCY` | `0.5` | A word of a keyword query found in more than this share of a tenant's chunks (a product name, "project") is left out of it; `1.0` turns it off. Not applied below 20 chunks or to quoted phrases and `-word` |
+| `KEYWORD_RARITY_WEIGHTING` | `true` | Rank the keyword search's OR fallback by how rare the matched words are (a rare word outweighs several common ones) instead of `ts_rank`; only from 20 chunks; `false` turns it off |
 | `RERANK_ENABLED` | `false` | Whether `POST /query` reranks retrieved chunks before answering |
 | `RERANK_MODEL` | `cohere/rerank-v3.5` | LiteLLM rerank model, used only when `RERANK_ENABLED=true` |
 | `ANSWER_CONTEXT_NEIGHBOURS` | `1` | Chunks before and after each retrieved chunk that `POST /query` also gives the answer model, joined into continuous excerpts; `0` turns it off |

@@ -64,6 +64,10 @@ chunks apart no better than "the" does, and it would let every generic chunk mat
 keyword credit ahead of the chunk that actually answers. This needs at least 20 chunks, is not
 applied to a quoted phrase or a `-word`, and `1.0` turns it off.
 
+When the fallback runs, chunks are ranked by how **rare** the words they contain are, so one
+rare word (a specific term the question is really about) outweighs several common ones such as
+"api" or "documentation". `KEYWORD_RARITY_WEIGHTING=false` restores PostgreSQL's plain ranking.
+
 ### What the answer model reads
 
 `/query` does not hand the model the retrieved chunks as separate blocks in score order. A

@@ -4,10 +4,15 @@ The smoke run uses ``FakeEmbedder``, which has no semantics, so the numbers it
 produces mean nothing; only their shape is asserted (decision 5, docs/plans/phase-1.md).
 """
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from evaluation.evaluate_ranking import (
+    DATASET_PATH,
+    DOCS_HELDOUT_PATH,
+    HELDOUT_PATH,
     MODES,
     Case,
     CaseResult,
@@ -136,3 +141,33 @@ def test_the_evaluation_runs_end_to_end_for_every_mode_and_for_the_agent(
 
     assert len(agent_results) == len(steps) == len(cases)
     assert all(step >= 1 for step in steps)
+
+
+def test_the_held_out_questions_are_new_and_each_marker_identifies_one_chunk() -> None:
+    """They must not be the questions the ranking design was chosen on."""
+    chunks = _all_chunks()
+    designed_on = {case.question for case in load_cases(DATASET_PATH)}
+    held_out = load_cases(HELDOUT_PATH)
+
+    assert len(held_out) >= 10
+    assert not designed_on & {case.question for case in held_out}
+    assert not {case.id for case in load_cases(DATASET_PATH)} & {case.id for case in held_out}
+    for case in held_out:
+        for marker in case.expected:
+            assert sum(marker in chunk for chunk in chunks) == 1, (case.id, marker)
+        assert (PRODUCT in case.question) == (case.product_name == "with"), case.id
+
+
+ROOT = Path(__file__).parent.parent
+DOCS_FILES = ["AGENTS.md", "docs/plans/phase-4.md", "docs/plans/phase-5.md"]
+
+
+def test_the_real_prose_questions_find_their_markers_in_the_public_documents() -> None:
+    """If a document is edited so that a marker disappears, update the dataset."""
+    text = "\n".join((ROOT / name).read_text() for name in DOCS_FILES)
+    cases = load_cases(DOCS_HELDOUT_PATH)
+
+    assert len(cases) >= 8
+    for case in cases:
+        for marker in case.expected:
+            assert text.count(marker) >= 1, (case.id, marker)

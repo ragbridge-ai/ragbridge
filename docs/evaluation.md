@@ -237,9 +237,44 @@ works, uses 1.12.
 Limits, stated plainly: 16 questions on one synthetic corpus; recall@1 stays low (0.22) because
 the distractors deliberately contain the question's own words; the vector arm is unchanged and
 still weak on the long table chunk; one two-chunk question (web framework plus license) still
-ranks the table 6th. The Acme figures are unchanged by this: with the filter on or off its MRR
-is 0.940 and recall@5 100%; its published 0.960 above dates from 2026-09-18 and has drifted
-with other retrieval changes since, not measured here.
+ranks the table 6th.
+
+#### Rarity weighting of the keyword fallback (held-out questions)
+
+`ts_rank` weighs every word the same, so in the OR fallback a chunk matching three common words
+outranks the one chunk with the single rare word. `KEYWORD_RARITY_WEIGHTING` ranks by the summed
+`ln(chunks / chunks containing the word)` instead. Because the 16 questions above were used to
+choose the previous change, two **new** sets were written and committed before this was
+implemented, and were run once before and once after, without tuning:
+
+| Held-out set | Mode | recall@5 | recall@1 | MRR |
+|---|---|---|---|---|
+| synthetic corpus, 12 questions | keyword | 1.00 -> 1.00 | 0.79 -> 0.79 | 0.96 -> 0.96 |
+| synthetic corpus, 12 questions | hybrid | 0.96 -> 0.96 | 0.50 -> 0.50 | 0.72 -> 0.72 |
+| real prose (`AGENTS.md`, `phase-4.md`, `phase-5.md`), 8 questions | keyword | 0.88 -> 0.88 | 0.75 -> 0.75 | 0.79 -> **0.81** |
+| real prose, 8 questions | hybrid | 0.88 -> 0.88 | 0.62 -> 0.62 | 0.73 -> **0.75** |
+| the original 16 (not held out; regression check) | hybrid | 0.97 -> 0.97 | 0.22 -> 0.22 | 0.60 -> 0.60 |
+| Acme (`evaluate_retrieval`) | hybrid | 100% -> 100% | | 0.940 -> **0.960** |
+
+The effect is **small**: most of these questions match strictly and never reach the fallback,
+and the synthetic set was already near its ceiling. Nothing regressed. The real-prose set is
+reproducible on the public files:
+
+```bash
+uv run python -m evaluation.evaluate_ranking --api-key <scratch-tenant-key> \
+  --dataset evaluation/docs_heldout.jsonl \
+  --files AGENTS.md docs/plans/phase-4.md docs/plans/phase-5.md
+```
+
+**What it does not fix, measured.** A chunk that contains a rare word can be the keyword arm's
+#1 and still rank 10th to 15th in the hybrid result. On a real question about "Swagger", the one
+chunk containing that word was **keyword #1 before and after** (so the OR ranking was never its
+problem) and **absent from the vector arm's top 20**. Its fused score is then `1/61 = 0.0164`,
+the most any single-arm chunk can get, and eleven chunks beat it by being present in *both* lists
+at middling ranks (a chunk at vector #19 and keyword #18 scores 0.0255). Reciprocal rank fusion
+favours weak agreement between two arms over one arm's certainty, and the vector arm does not
+retrieve the chunk at all. Rarity weighting cannot change that: it only reorders inside the
+keyword arm. The next options are in the pull request that added this section.
 
 ### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
 

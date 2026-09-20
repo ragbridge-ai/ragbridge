@@ -96,6 +96,7 @@ async def search_documents(
         mode=request.mode or settings.retrieval_mode,
         candidates=settings.retrieval_candidates,
         max_term_share=settings.keyword_max_term_frequency,
+        rarity_weighting=settings.keyword_rarity_weighting,
         tenant_id=tenant.id,
     )
     rows = await reranker.rerank(request.query, candidates, request.top_k)
