@@ -1,0 +1,16 @@
+{"id": "s1", "length": "short", "product_name": "without", "facts": "one", "question": "web framework", "expected": ["| Area | Tool |"]}
+{"id": "s2", "length": "short", "product_name": "with", "facts": "one", "question": "Zenvora web framework", "expected": ["| Area | Tool |"]}
+{"id": "s3", "length": "short", "product_name": "without", "facts": "two", "question": "web framework database", "expected": ["| Area | Tool |"]}
+{"id": "s4", "length": "short", "product_name": "with", "facts": "two", "question": "Zenvora web framework database", "expected": ["| Area | Tool |"]}
+{"id": "l1", "length": "long", "product_name": "without", "facts": "one", "question": "What web framework does the project use?", "expected": ["| Area | Tool |"]}
+{"id": "l2", "length": "long", "product_name": "with", "facts": "one", "question": "What web framework does the Zenvora project use?", "expected": ["| Area | Tool |"]}
+{"id": "l3", "length": "long", "product_name": "without", "facts": "two", "question": "Which web framework and which database does the project use?", "expected": ["| Area | Tool |"]}
+{"id": "l4", "length": "long", "product_name": "with", "facts": "two", "question": "Which web framework and which database does the Zenvora project use?", "expected": ["| Area | Tool |"]}
+{"id": "l5", "length": "long", "product_name": "without", "facts": "two", "question": "What do we use for type checking, and which tool lints and formats the code?", "expected": ["| Area | Tool |"]}
+{"id": "l6", "length": "long", "product_name": "with", "facts": "two", "question": "What does the Zenvora project use for type checking, and which tool lints and formats its code?", "expected": ["| Area | Tool |"]}
+{"id": "x1", "length": "long", "product_name": "without", "facts": "two-chunks", "question": "What web framework does the project use, and which license is it released under?", "expected": ["| Area | Tool |", "released under the MIT license"]}
+{"id": "x2", "length": "long", "product_name": "with", "facts": "two-chunks", "question": "What web framework does the Zenvora project use, and which license is it released under?", "expected": ["| Area | Tool |", "released under the MIT license"]}
+{"id": "c1", "length": "short", "product_name": "without", "facts": "control", "question": "license", "expected": ["released under the MIT license"]}
+{"id": "c2", "length": "long", "product_name": "with", "facts": "control", "question": "Which license is the Zenvora project released under?", "expected": ["released under the MIT license"]}
+{"id": "c3", "length": "long", "product_name": "with", "facts": "control", "question": "How do I run the tests for the Zenvora project?", "expected": ["run the tests with `uv run pytest`"]}
+{"id": "c4", "length": "long", "product_name": "without", "facts": "control", "question": "How do I run the tests, and when was version 2.0 released?", "expected": ["run the tests with `uv run pytest`", "version 2.0 was released in March 2025"]}
