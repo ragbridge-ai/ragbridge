@@ -22,8 +22,11 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
 | `KEYWORD_MAX_TERM_FREQUENCY` | `0.5` | A word of a keyword query found in more than this share of a tenant's chunks (a product name, "project") is left out of it; `1.0` turns it off. Not applied below 20 chunks or to quoted phrases and `-word` |
 | `KEYWORD_RARITY_WEIGHTING` | `true` | Rank the keyword search's OR fallback by how rare the matched words are (a rare word outweighs several common ones) instead of `ts_rank`; only from 20 chunks; `false` turns it off |
-| `RERANK_ENABLED` | `false` | Whether `POST /query` reranks retrieved chunks before answering |
-| `RERANK_MODEL` | `cohere/rerank-v3.5` | LiteLLM rerank model, used only when `RERANK_ENABLED=true` |
+| `RERANK_ENABLED` | `false` | Whether `/query`, `/search` and `/agent` rerank the retrieved chunks |
+| `RERANK_BACKEND` | `api` | `api` calls a hosted rerank endpoint (`RERANK_MODEL`); `chat` has the chat model rate each of the best `RERANK_CANDIDATES` chunks against the question, so it works with local Ollama (one model call per candidate; `/agent` reranks every search step) |
+| `RERANK_MODEL` | `cohere/rerank-v3.5` | LiteLLM rerank model, used only with `RERANK_BACKEND=api` |
+| `RERANK_CHAT_MODEL` | *(empty)* | LiteLLM model that rates chunks with `RERANK_BACKEND=chat`; empty reuses `CHAT_MODEL` |
+| `RERANK_CANDIDATES` | `10` | How many of the best fused chunks the `chat` backend rates (`1`-`40`); chunks after them keep their order |
 | `ANSWER_CONTEXT_NEIGHBOURS` | `1` | Chunks before and after each retrieved chunk that `POST /query` also gives the answer model, joined into continuous excerpts; `0` turns it off |
 | `ANSWER_CONTEXT_MAX_CHARS` | `6000` | Ceiling on the neighbours added to the answer context (retrieved chunks are always kept); protects a local model's small context window |
 | `REDIS_URL` | `redis://localhost:6379/0` | Queue (background jobs) and cache connection |

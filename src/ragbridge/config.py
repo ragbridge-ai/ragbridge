@@ -141,8 +141,27 @@ class Settings(BaseSettings):
     or API key, so a fresh docker compose up with local Ollama keeps
     working unchanged - Ollama itself has no rerank endpoint anyway.
     """
+    rerank_backend: Literal["api", "chat"] = "api"
+    """How reranking is done, used only when rerank_enabled is true.
+
+    ``api`` calls a hosted rerank endpoint (``rerank_model``: Cohere, Voyage, Jina).
+    ``chat`` asks a chat model to rate each of the best ``rerank_candidates`` chunks
+    against the question, so it works with a local Ollama model that has no rerank
+    endpoint - at the price of one model call per candidate.
+    """
     rerank_model: str = "cohere/rerank-v3.5"
-    """LiteLLM rerank model name, used only when rerank_enabled is true."""
+    """LiteLLM rerank model name, used only when ``rerank_backend`` is ``api``."""
+    rerank_chat_model: str = ""
+    """LiteLLM model that rates chunks when ``rerank_backend`` is ``chat``; empty reuses
+    ``chat_model``. On a small local model the answer model is also the better judge: in
+    the measurement in docs/evaluation.md, ``llama3.2:3b`` barely improved the ranking
+    and ``qwen2.5:7b`` improved it a lot.
+    """
+    rerank_candidates: int = Field(default=10, ge=1, le=40)
+    """How many of the best fused chunks the ``chat`` backend rates (one model call each).
+    Chunks after them keep their order. A chunk that fusion put lower than this is never
+    rescued, which is the price of the latency.
+    """
 
     answer_context_neighbours: int = 1
     """How many chunks before and after each retrieved chunk POST /query also gives
