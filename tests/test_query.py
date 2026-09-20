@@ -212,6 +212,34 @@ def test_answer_cache_is_invalidated_by_a_new_upload(
     assert response.json()["answer"] == "NEW ANSWER AFTER UPLOAD"
 
 
+def test_answer_cache_is_not_served_after_a_setting_that_shapes_the_answer_changes(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """A cached answer belongs to the settings that produced it: change the chat model (or the
+    temperature, retrieval, reranking...) and the old answer must not come back, while going back
+    to the old settings finds it again.
+    """
+    old_settings = Settings(answer_cache_enabled=True)
+    new_settings = Settings(answer_cache_enabled=True, chat_model="ollama/another-model")
+    app_with_database.dependency_overrides[get_settings] = lambda: old_settings
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    client.post("/documents", files={"file": ("a.txt", b"Some fact.", "text/plain")})
+    first = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    class _NewModelChatter:
+        async def answer(self, question: str, context: list[str]) -> str:
+            return "ANSWER FROM THE NEW MODEL"
+
+    app_with_database.dependency_overrides[get_chatter] = lambda: _NewModelChatter()
+    app_with_database.dependency_overrides[get_settings] = lambda: new_settings
+    changed = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+    app_with_database.dependency_overrides[get_settings] = lambda: old_settings
+    back = client.post("/query", json={"question": "Some fact.", "top_k": 5})
+
+    assert changed.json()["answer"] == "ANSWER FROM THE NEW MODEL"
+    assert back.json() == first.json(), "the entry made under the old settings is still there"
+
+
 def test_answer_cache_disabled_by_default_recomputes_every_time(
     app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
