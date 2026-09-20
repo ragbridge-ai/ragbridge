@@ -128,9 +128,9 @@ illustrative:
 - `rank_before_rerank` is the chunk's position before the reranker ran. When it always
   equals the chunk's position in the results, reranking is off (the default).
 
-Without `explain` the response is exactly what it was before. `/agent` and the MCP tools
-do not offer it: the agent merges chunks found by several searches, so a single arm's
-rank has no clear meaning there.
+Without `explain` the response is exactly what it was before. `/agent` does not offer it: the
+agent merges chunks found by several searches, so a single arm's rank has no clear meaning
+there. The MCP tool `search_documents` does (see [MCP](#mcp)); `ask` does not.
 
 ## Search without generating an answer
 
@@ -210,6 +210,14 @@ Claude Desktop can search a tenant's documents. It exposes three tools -
 finished answer with sources: `top_k` is 5, and sources marked `context_only` were given to
 the model as surrounding text but not scored by retrieval), and `list_documents` - and deliberately not the agent: an
 MCP client is already an agent and can call `search_documents` repeatedly itself.
+
+`search_documents` takes an optional `explain` (boolean, default `false`). With `explain: true` the
+result also carries, for every passage, the same `retrieval` object as `POST /search` (the rank in the
+vector and the keyword search, `null` meaning that search did not find it; the fused score; the rank
+before reranking) and `candidate_count`. Without it the request and the result are exactly what they
+were, and the tool's declared output schema does not change either way. The tool's *input* schema does
+gain `explain`, so **a client that cached the tool list, such as Claude Desktop, must be restarted**
+before the model can use the flag.
 
 **Over HTTP**, the server is mounted at `/mcp` (streamable HTTP) and takes the same
 `Authorization: Bearer <key>` as every other endpoint. A request with no bearer token
