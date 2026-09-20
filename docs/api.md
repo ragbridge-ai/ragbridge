@@ -41,6 +41,16 @@ see [ADR 0003](adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pass
 instead of `RETRIEVAL_MODE`'s default. Only documents belonging to the calling
 tenant's key are ever searched.
 
+### What the answer model reads
+
+`/query` gives the model the retrieved chunks in **document order**, not score order, each
+labelled `[filename, chunk N]` (the same `chunk_index` the response reports for its
+sources), with a note such as `[... chunks 2-3 are not shown ...]` where two retrieved
+chunks are not neighbours. A chunk often ends with a heading whose bullets begin the next
+one; in score order the model could read those bullets before the heading and attach them
+to the wrong company. The response's `sources` stay in score order. The prompt also says
+that a bullet belongs to the heading above it.
+
 ### How the keyword search reads your text
 
 Retrieval is hybrid: a vector search plus a keyword (full-text) search. The keyword search
