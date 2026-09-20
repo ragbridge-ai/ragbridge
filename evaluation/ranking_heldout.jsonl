@@ -1,0 +1,12 @@
+{"id": "h1", "length": "long", "product_name": "without", "facts": "one", "question": "Which library handles database migrations, and where is the ORM configured?", "expected": ["| Area | Tool |"]}
+{"id": "h2", "length": "long", "product_name": "with", "facts": "one", "question": "What does the Zenvora project use for caching and job queues?", "expected": ["| Area | Tool |"]}
+{"id": "h3", "length": "long", "product_name": "without", "facts": "one", "question": "Which tool records traces of the language model calls?", "expected": ["| Area | Tool |"]}
+{"id": "h4", "length": "short", "product_name": "without", "facts": "one", "question": "reporting API release", "expected": ["version 2.0 was released in March 2025"]}
+{"id": "h5", "length": "long", "product_name": "with", "facts": "one", "question": "In which version did Zenvora drop support for Python 3.10?", "expected": ["version 2.0 was released in March 2025"]}
+{"id": "h6", "length": "long", "product_name": "without", "facts": "one", "question": "Who receives security reports, and how are they sent?", "expected": ["questions are answered on the community forum"]}
+{"id": "h7", "length": "long", "product_name": "with", "facts": "one", "question": "Where can I ask questions about the Zenvora project?", "expected": ["questions are answered on the community forum"]}
+{"id": "h8", "length": "long", "product_name": "without", "facts": "two-chunks", "question": "Which license applies, and how do I run the tests?", "expected": ["released under the MIT license", "run the tests with `uv run pytest`"]}
+{"id": "h9", "length": "long", "product_name": "with", "facts": "two-chunks", "question": "What is the Zenvora license, and when was version 2.0 released?", "expected": ["released under the MIT license", "version 2.0 was released in March 2025"]}
+{"id": "h10", "length": "long", "product_name": "without", "facts": "one", "question": "Which framework serves the API, and which server process runs it in production?", "expected": ["| Area | Tool |"]}
+{"id": "h11", "length": "long", "product_name": "with", "facts": "one", "question": "What programming language and version does the Zenvora project require?", "expected": ["| Area | Tool |"]}
+{"id": "h12", "length": "long", "product_name": "with", "facts": "two-chunks", "question": "Which web framework does the Zenvora project use, and where do security reports go?", "expected": ["| Area | Tool |", "questions are answered on the community forum"]}

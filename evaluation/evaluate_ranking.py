@@ -30,6 +30,8 @@ from evaluation.evaluate_retrieval import HttpClient
 from evaluation.ranking_corpus import build_documents
 
 DATASET_PATH = Path(__file__).parent / "ranking_dataset.jsonl"
+HELDOUT_PATH = Path(__file__).parent / "ranking_heldout.jsonl"
+"""Questions written after the ranking design was fixed and never used to choose it."""
 KS = (1, 5, 10)
 SEARCH_DEPTH = 20
 """How deep a search looks. Beyond it a chunk counts as not found."""
@@ -161,10 +163,16 @@ def main() -> None:
     parser.add_argument("--api-key", required=True, help="API key created with ragbridge-admin.")
     parser.add_argument("--agent", action="store_true", help="also run POST /agent")
     parser.add_argument("--skip-upload", action="store_true", help="the corpus is already uploaded")
+    parser.add_argument(
+        "--dataset",
+        type=Path,
+        default=DATASET_PATH,
+        help=f"questions to run (the held-out set is {HELDOUT_PATH.name})",
+    )
     args = parser.parse_args()
 
     headers = {"Authorization": f"Bearer {args.api_key}"}
-    cases = load_cases()
+    cases = load_cases(args.dataset)
     with httpx.Client(base_url=args.base_url, headers=headers, timeout=300.0) as client:
         if not args.skip_upload:
             upload_corpus(client)
