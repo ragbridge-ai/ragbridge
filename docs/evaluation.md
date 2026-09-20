@@ -354,6 +354,45 @@ Hybrid mode, recall@5 / MRR, `nomic-embed-text`, 2026-09-20:
   model on one machine, one run per row; retrieval itself varies by about one chunk between runs.
   Reproduce with `RERANK_ENABLED=true RERANK_BACKEND=chat` on the server and the commands above.
 
+### The answer model: repeated runs
+
+Two answers that were right in one build were wrong in the next, with the same retrieval. To
+see why, an invented CV (5 companies as headings with dates and 3 to 6 bullets each, one skills
+line) was uploaded with three unrelated technical documents, two of them full of "Docker" (26
+chunks, a scratch tenant). The chunker cuts the CV so that the Docker bullet ends one chunk and,
+through the overlap, starts the next one directly above the *next* company's heading. Question:
+"Which of the jobs involved Docker or container orchestration? Give company, city, dates,
+achievement." `qwen2.5:7b` through Ollama 0.34.1, 2026-09-20, the same context every run:
+
+| Case | Right company | Distinct answers |
+|---|---|---|
+| default (no temperature sent, so Ollama samples at 0.8), 10 runs in two batches | 5 of 10 | different in every run of a batch |
+| `CHAT_TEMPERATURE=0`, 6 runs | **6 of 6** | 1 |
+| temperature 0, the chunk with the heading **not** in the context, 6 runs | 0 of 6 | 1 |
+| the same with a note "chunks 0-1 are not shown" in front of the excerpt, 4 runs | 0 of 4 | 1 |
+| the same plus a prompt rule about that note, 4 runs | 0 of 4 | 1 |
+
+"Which PHP frameworks does the person know?" (skills line in a scored chunk) was answered fully
+in all 10 runs at the default and all 10 runs at temperature 0.
+
+What this shows, and what it does not:
+
+- With the correct heading in the context the answer varied only through sampling. The context
+  string was well formed every time (heading, its bullets, then the next heading, in one excerpt).
+  Temperature 0 made it deterministic and correct on this corpus. That does not prove a
+  deterministic answer is a correct one on other data; it removes the run-to-run noise.
+- If the chunk with the heading is missing, the model gives the bullet to the heading below it,
+  every time. A note that text is missing, and a prompt rule about it, did not change that for
+  this model, so neither was kept. What prevents it is keeping the neighbour in the context, which
+  `ANSWER_CONTEXT_NEIGHBOURS` and `ANSWER_CONTEXT_MAX_CHARS` control. Whether to add the *previous*
+  neighbour before the following one under a tight budget was not measured, and is left as it is.
+- The unrelated Docker chunks took 4 of the 5 scored slots. With rarity weighting off the scored
+  set was the same chunks: they came through the vector arm (ranks 2 to 4), because they are about
+  Docker. Rarity weighting added one chunk that matched only the word "jobs".
+- One corpus of 26 invented chunks, one 7B model, 4 to 10 runs per row. It shows a mechanism,
+  not a rate.
+
+
 ### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
 
 2026-09-19, on an **Apple M1 Pro with 16 GB** (macOS 27.0, Ollama 0.34.1, Docker Desktop's VM

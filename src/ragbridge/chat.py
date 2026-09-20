@@ -51,7 +51,13 @@ class LiteLLMChatter:
 
         model = self._settings.chat_model
         api_base = self._settings.ollama_base_url if model.startswith("ollama/") else None
-        response = await litellm.acompletion(model=model, messages=messages, api_base=api_base)
+        response = await litellm.acompletion(
+            model=model,
+            messages=messages,
+            api_base=api_base,
+            temperature=self._settings.chat_temperature,
+            drop_params=True,
+        )
         content = response.choices[0].message.content
         return content or ""
 
