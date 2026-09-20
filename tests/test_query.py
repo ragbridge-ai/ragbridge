@@ -365,7 +365,7 @@ class _RecordingChatter:
         return "recorded"
 
 
-def test_query_gives_the_model_document_order_but_returns_sources_in_score_order(
+def test_query_gives_the_model_one_excerpt_in_document_order_but_sources_in_score_order(
     app_with_database: FastAPI, tenant_with_key: str
 ) -> None:
     """The model must read a document top to bottom, so a bullet stays under its own
@@ -381,7 +381,6 @@ def test_query_gives_the_model_document_order_but_returns_sources_in_score_order
 
     source_order = [source["chunk_index"] for source in body["sources"]]
     assert sorted(source_order) != source_order, "precondition: retrieval is not in document order"
-    assert recorder.context == [
-        f"[doc.txt, chunk {index}]\n{paragraph}" for index, paragraph in enumerate(PARAGRAPHS)
-    ]
+    # All four chunks are neighbours, so they reach the model as one continuous excerpt.
+    assert recorder.context == ["[doc.txt, chunks 0-3]\n" + "\n".join(PARAGRAPHS)]
     assert sorted(source_order) == [0, 1, 2, 3]
