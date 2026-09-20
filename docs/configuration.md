@@ -16,7 +16,7 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `CHAT_MODEL` | `ollama/llama3.2` | LiteLLM model used to answer questions |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Where to reach Ollama |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `200` | Maximum characters per chunk, and the context repeated between neighbours. Chunks are cut at line, sentence and word boundaries, never inside a word |
-| `CHUNK_MIN_SIZE` | `100` | A chunk shorter than this is merged into its neighbour; `0` turns it off. A merged chunk can exceed `CHUNK_SIZE` by less than this |
+| `CHUNK_MIN_SIZE` | `100` | A chunk shorter than this is merged into its neighbour; `0` turns it off. A merged chunk can exceed `CHUNK_SIZE` by less than this. Independently of this setting, a Markdown heading line (`#` to `######`, then a space) is never the last line of a chunk: it moves to the start of the next one, so it stays with its text, and that chunk can exceed `CHUNK_SIZE` by the heading's length (a `# comment` in a code block looks the same and is treated the same). Chunks are built at upload: documents uploaded earlier keep their old chunks until you delete and re-upload them |
 | `RETRIEVAL_MODE` | `hybrid` | `hybrid` (vector + keyword, merged with reciprocal rank fusion), `vector`, or `keyword` |
 | `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
 | `KEYWORD_MAX_TERM_FREQUENCY` | `0.5` | A word of a keyword query found in more than this share of a tenant's chunks (a product name, "project") is left out of it; `1.0` turns it off. Not applied below 20 chunks or to quoted phrases and `-word` |
