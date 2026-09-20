@@ -34,7 +34,14 @@ curl -X POST http://localhost:8000/query \
 ```
 
 Returns `{"answer": "...", "sources": [...]}`. Each source reports the originating
-document, its chunk position, a text snippet, and a relevance score. Retrieval is
+document, its chunk position, a text snippet, a relevance score, and `context_only`.
+**`sources` lists every chunk the model was given, one entry per chunk.** `top_k` (default 5,
+at most 20) is the number of chunks *retrieved*: those come first, best first, with
+`context_only: false`. They are followed by the chunks next to them that were given to the
+model as surrounding text (see *What the answer model reads*): `context_only: true`, score
+`0.0`, because retrieval did not score them. So `sources` can hold more than `top_k`
+entries, bounded by `ANSWER_CONTEXT_MAX_CHARS`; set `ANSWER_CONTEXT_NEIGHBOURS=0` and it
+holds exactly the retrieved chunks. Retrieval is
 hybrid by default (vector + keyword search, merged with reciprocal rank fusion -
 see [ADR 0003](adr/0003-hybrid-search-with-reciprocal-rank-fusion.md)); pass
 `"mode": "vector"` or `"mode": "keyword"` in the request to use a single method
@@ -63,8 +70,9 @@ continuous excerpt** (the text two chunks share is written once), labelled
 note such as `[... chunks 5-6 are not shown ...]` where text is missing between excerpts.
 Neighbours are added only up to `ANSWER_CONTEXT_MAX_CHARS`, so a local model's small
 context window is not overflowed. The prompt also says that a bullet belongs to the
-heading above it. The response's `sources` list only what retrieval returned, in score
-order. None of this needs a re-upload: it happens at query time.
+heading above it. Every chunk the model received is listed in the response's `sources`:
+the retrieved ones first, in score order, then the neighbours marked `context_only`. None
+of this needs a re-upload: it happens at query time.
 
 ## See why a chunk was found
 
@@ -189,7 +197,8 @@ is no way to recover a lost key, only to revoke it and create a new one.
 ragbridge is also an [MCP](https://modelcontextprotocol.io) server, so a client such as
 Claude Desktop can search a tenant's documents. It exposes three tools -
 `search_documents` (whole chunks, for the client's own model to reason over), `ask` (a
-finished answer with sources), and `list_documents` - and deliberately not the agent: an
+finished answer with sources: `top_k` is 5, and sources marked `context_only` were given to
+the model as surrounding text but not scored by retrieval), and `list_documents` - and deliberately not the agent: an
 MCP client is already an agent and can call `search_documents` repeatedly itself.
 
 **Over HTTP**, the server is mounted at `/mcp` (streamable HTTP) and takes the same

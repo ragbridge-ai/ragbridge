@@ -52,6 +52,10 @@ curl -X POST http://localhost:8000/query \
 | `POST /agent` | Several searches, then an answer, listing the searches it ran |
 | `/mcp` | The same search and answers for MCP clients |
 
+`/query`'s `sources` lists every chunk the model was given: the `top_k` retrieved ones first,
+then neighbouring chunks marked `"context_only": true` (given as surrounding text, not
+scored by retrieval, score `0.0`).
+
 Add `"explain": true` to `/query` or `/search` to see which search found each chunk.
 Details and examples: [API guide](docs/api.md).
 
