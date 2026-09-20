@@ -1,0 +1,9 @@
+{"id": "t1", "length": "long", "product_name": "without", "facts": "one", "question": "Which interpreter release does the codebase target?", "expected": ["| Language | Python 3.12 |"]}
+{"id": "t2", "length": "long", "product_name": "without", "facts": "one", "question": "Which programming language release should contributors install?", "expected": ["| Language | Python 3.12 |"]}
+{"id": "t3", "length": "long", "product_name": "without", "facts": "one", "question": "Which relational store does the service rely on for vectors?", "expected": ["| Database | PostgreSQL with `pgvector` |"]}
+{"id": "t4", "length": "long", "product_name": "without", "facts": "one", "question": "What does the team use to watch calls made to language models in production?", "expected": ["| Observability | Langfuse (from Phase 3) |"]}
+{"id": "t5", "length": "long", "product_name": "without", "facts": "one", "question": "How should an autonomous multi-step component be built here?", "expected": ["| Agents | Own bounded loop, no framework (from Phase 4) |"]}
+{"id": "t6", "length": "long", "product_name": "without", "facts": "one", "question": "Which style checker must pass before code is accepted?", "expected": ["Code must pass `ruff check` and `ruff format --check`."]}
+{"id": "t7", "length": "long", "product_name": "without", "facts": "one", "question": "How are commit messages worded?", "expected": ["Use Conventional Commits for commit messages"]}
+{"id": "t8", "length": "long", "product_name": "without", "facts": "one", "question": "Where do runtime options and credentials come from?", "expected": ["Configuration comes from environment variables through pydantic-settings."]}
+{"id": "t9", "length": "long", "product_name": "without", "facts": "one", "question": "Why does the app build itself inside a function instead of at import time?", "expected": ["Use the application factory pattern (`create_app()`), so tests can build a fresh app."]}
