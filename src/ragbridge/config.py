@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     """
     chat_model: str = "ollama/llama3.2"
     """LiteLLM model name used to answer questions (from step 5 on)."""
+    chat_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    """Sampling temperature of the answer model (``POST /query``, and the answer of ``/agent``).
+
+    0 makes the model pick its most likely word every time, so asking the same question
+    over the same context gives the same answer. Without it a provider uses its own
+    default (Ollama: 0.8), and a small local model then reads the same bullet under a
+    different company's heading from one run to the next. Raise it only if you want
+    varied wording. Providers that reject the parameter simply do not receive it.
+    """
     ollama_base_url: str = "http://localhost:11434"
 
     chunk_size: int = 1000
