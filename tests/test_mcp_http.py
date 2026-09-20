@@ -79,6 +79,26 @@ def test_search_documents_returns_the_callers_own_chunks(
     assert (hit["filename"], hit["content"]) == ("codes.txt", SECRET)
 
 
+def test_search_documents_with_explain_says_which_retrieval_arm_found_the_chunk(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    _upload(app_with_database, tenant_with_key, "codes.txt", SECRET)
+
+    plain, explained = _mcp(
+        app_with_database,
+        (tenant_with_key, "search_documents", {"query": SECRET}),
+        (tenant_with_key, "search_documents", {"query": SECRET, "explain": True}),
+    )
+
+    [hit] = explained.structured_content["results"]
+    assert hit["retrieval"]["vector_rank"] == 1
+    assert hit["retrieval"]["keyword_rank"] == 1
+    assert hit["retrieval"]["rank_before_rerank"] == 1
+    assert explained.structured_content["candidate_count"] == 1
+    assert "retrieval" not in plain.structured_content["results"][0]
+    assert "candidate_count" not in plain.structured_content
+
+
 def test_ask_returns_an_answer_with_sources(
     app_with_database: FastAPI, tenant_with_key: str
 ) -> None:

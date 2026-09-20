@@ -14,7 +14,7 @@ import httpx
 
 from ragbridge.api.documents import DocumentOut
 from ragbridge.api.query import QueryResponse
-from ragbridge.api.search import SearchResponse
+from ragbridge.api.search import ExplainableSearchResponse, SearchResponse
 
 
 class RagbridgeError(Exception):
@@ -45,6 +45,13 @@ class RagbridgeClient:
     async def search(self, query: str, top_k: int) -> SearchResponse:
         response = await self._request("POST", "/search", json={"query": query, "top_k": top_k})
         return SearchResponse.model_validate(response.json())
+
+    async def search_explained(self, query: str, top_k: int) -> ExplainableSearchResponse:
+        """``search`` with ``explain``: each hit also says which retrieval arm found it."""
+        response = await self._request(
+            "POST", "/search", json={"query": query, "top_k": top_k, "explain": True}
+        )
+        return ExplainableSearchResponse.model_validate(response.json())
 
     async def ask(self, question: str) -> QueryResponse:
         response = await self._request("POST", "/query", json={"question": question})
