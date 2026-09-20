@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -103,6 +103,16 @@ class Settings(BaseSettings):
     Larger than top_k on purpose: fusion (and later, reranking) narrows a
     wide, cheap candidate set down to top_k - retrieving only top_k per
     arm would give a later reranker nothing extra to rerank.
+    """
+    keyword_max_term_frequency: float = Field(default=0.5, gt=0.0, le=1.0)
+    """A word of a keyword query that is in more than this share of the tenant's chunks is
+    left out of it. 1.0 turns that off.
+
+    A product name, or a word like "project", is in nearly every generic chunk of a
+    document set: it says nothing about which chunk answers, and it lets every generic
+    chunk match the keyword search and take keyword credit. Left out, only the words that
+    tell chunks apart decide. Not applied below 20 chunks (frequency means nothing yet),
+    to a query that is only common words, or to a quoted phrase or a ``-word``.
     """
 
     rerank_enabled: bool = False

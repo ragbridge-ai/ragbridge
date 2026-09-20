@@ -132,6 +132,7 @@ async def answer_query(
             request.question,
             mode=request.mode or settings.retrieval_mode,
             candidates=settings.retrieval_candidates,
+            max_term_share=settings.keyword_max_term_frequency,
             tenant_id=tenant.id,
         )
         rows = await reranker.rerank(request.question, candidates, request.top_k)

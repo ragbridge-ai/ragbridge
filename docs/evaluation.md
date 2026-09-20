@@ -197,6 +197,50 @@ So the loop itself works - a scripted planner is exercised in
 prompt, which is the first lever to try. Both are set through `AGENT_PLANNER_MODEL`
 and `PLANNER_PROMPT` in `ragbridge.agent.planner`; re-run this script after either.
 
+### Ranking on a larger corpus (`evaluate_ranking.py`)
+
+The Acme corpus above is too small for a ranking change to show: about 30 chunks, and one
+search returns most of them. `evaluate_ranking.py` uses a separate synthetic corpus of **100
+chunks**: 91 generic paragraphs that keep repeating a fictional product name, 4 distractors that
+use the same words without answering, 4 fact chunks, and the technology table of `AGENTS.md`
+copied verbatim (19 rows) as one long table chunk. Its 16 questions are short and long, with and
+without the product name, one fact or two, plus four controls. It needs a live server with a real
+embedder; run it against a scratch tenant:
+
+```bash
+uv run python -m evaluation.evaluate_ranking --api-key <key> --agent
+```
+
+`recall@k` is the share of the expected chunks in the first k results, `complete@5` is 1 only
+when all of them are, and `MRR` is 1 / the rank of the first one. Measured with
+`nomic-embed-text` (the agent used `qwen2.5:7b`), 2026-09-20:
+
+| Mode | Change | recall@1 | recall@5 | recall@10 | complete@5 | MRR |
+|---|---|---|---|---|---|---|
+| vector | none | 0.22 | 0.31 | 0.31 | 0.25 | 0.33 |
+| keyword | before | 0.41 | 0.75 | 0.75 | 0.75 | 0.58 |
+| keyword | words in most chunks left out | 0.78 | **1.00** | 1.00 | 1.00 | 0.94 |
+| hybrid (default) | before | 0.16 | 0.44 | 0.81 | 0.38 | 0.39 |
+| hybrid (default) | words in most chunks left out | 0.22 | **0.97** | **1.00** | **0.94** | 0.60 |
+| agent | before | 0.12 | 0.44 | 0.44 | 0.38 | 0.32 |
+| agent | words in most chunks left out | 0.22 | 0.97 | 1.00 | 0.94 | 0.60 |
+
+What the baseline showed: the right chunk was usually *found* but at rank 7 to 9, behind generic
+chunks. The product name was not the only cause: the vector arm found the long table chunk in the
+top 5 for **0 of 4** one-fact questions even without the name, so a long table embeds badly. The
+keyword arm without the name was excellent and collapsed with it, because a strict AND on the
+name matched only distractors, and under the OR fallback every generic chunk that shared the name
+took keyword credit. Leaving out words that occur in most chunks fixed that. The agent did not
+help at baseline (the same recall@5, 2.19 searches per question) and, once the first search
+works, uses 1.12.
+
+Limits, stated plainly: 16 questions on one synthetic corpus; recall@1 stays low (0.22) because
+the distractors deliberately contain the question's own words; the vector arm is unchanged and
+still weak on the long table chunk; one two-chunk question (web framework plus license) still
+ranks the table 6th. The Acme figures are unchanged by this: with the filter on or off its MRR
+is 0.940 and recall@5 100%; its published 0.960 above dates from 2026-09-18 and has drifted
+with other retrieval changes since, not measured here.
+
 ### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
 
 2026-09-19, on an **Apple M1 Pro with 16 GB** (macOS 27.0, Ollama 0.34.1, Docker Desktop's VM

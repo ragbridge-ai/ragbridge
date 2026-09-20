@@ -19,6 +19,7 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `CHUNK_MIN_SIZE` | `100` | A chunk shorter than this is merged into its neighbour; `0` turns it off. A merged chunk can exceed `CHUNK_SIZE` by less than this |
 | `RETRIEVAL_MODE` | `hybrid` | `hybrid` (vector + keyword, merged with reciprocal rank fusion), `vector`, or `keyword` |
 | `RETRIEVAL_CANDIDATES` | `20` | Rows each retrieval arm contributes before fusion/reranking |
+| `KEYWORD_MAX_TERM_FREQUENCY` | `0.5` | A word of a keyword query found in more than this share of a tenant's chunks (a product name, "project") is left out of it; `1.0` turns it off. Not applied below 20 chunks or to quoted phrases and `-word` |
 | `RERANK_ENABLED` | `false` | Whether `POST /query` reranks retrieved chunks before answering |
 | `RERANK_MODEL` | `cohere/rerank-v3.5` | LiteLLM rerank model, used only when `RERANK_ENABLED=true` |
 | `ANSWER_CONTEXT_NEIGHBOURS` | `1` | Chunks before and after each retrieved chunk that `POST /query` also gives the answer model, joined into continuous excerpts; `0` turns it off |
