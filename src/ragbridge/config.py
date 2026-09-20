@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     to a query that is only common words, or to a quoted phrase or a ``-word``.
     """
 
+    keyword_rarity_weighting: bool = True
+    """Rank the keyword search's OR fallback by how rare the matched words are.
+
+    PostgreSQL's ``ts_rank`` weighs every word the same, so a chunk that matches three
+    common words (api, documentation, page) outranks the one chunk with the single rare
+    word the question is about. With this on, each matched word counts
+    ``ln(chunks / chunks containing it)``. Only the OR fallback is affected, and only from
+    20 chunks up.
+    """
+
     rerank_enabled: bool = False
     """Whether POST /query reranks retrieved chunks before answering.
 

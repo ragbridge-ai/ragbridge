@@ -6,13 +6,14 @@ results, and ``hybrid_search`` ties everything together into the one
 function ``POST /query`` calls.
 """
 
+import math
 import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from sqlalchemy import func, select, text, tuple_
+from sqlalchemy import ColumnElement, case, func, literal, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
@@ -101,12 +102,16 @@ def or_fallback_query(query: str) -> str | None:
     the words, since the words are joined by ``or`` anyway, and a single word has
     nothing to relax.
     """
+    words = _or_words(query)
+    return " or ".join(words) if words else None
+
+
+def _or_words(query: str) -> list[str] | None:
+    """The words an OR fallback would join, or ``None`` when there is no fallback."""
     if _STRICT_SYNTAX.search(query):
         return None
     words = [word for word in _WORD.findall(query) if word.lower() != "or"]
-    if len(words) < 2:
-        return None
-    return " or ".join(words)
+    return words if len(words) >= 2 else None
 
 
 MIN_CHUNKS_FOR_TERM_FREQUENCY = 20
@@ -115,18 +120,39 @@ word is "common".
 """
 
 
-async def _common_words(
-    session: AsyncSession, words: list[str], tenant_id: uuid.UUID, max_share: float
-) -> set[str]:
-    """The words, lower-cased, that occur in more than ``max_share`` of the tenant's chunks.
+@dataclass(frozen=True)
+class _TermStats:
+    """How many of a tenant's chunks contain each word of a query."""
 
-    One pass over the tenant's chunks counts every word at once. A word is matched the way
-    the keyword search matches it (``websearch_to_tsquery``, so stemmed), and a stopword
-    matches nothing.
+    total: int
+    counts: dict[str, int]
+    """Lower-cased word -> number of chunks containing it, matched the way the keyword
+    search matches (``websearch_to_tsquery``, so stemmed; a stopword matches nothing).
+    """
+
+    def share(self, word: str) -> float:
+        return self.counts.get(word.lower(), 0) / self.total
+
+    def rarity(self, word: str) -> float:
+        """``ln(chunks / chunks containing the word)``: 0 for a word in every chunk, larger
+        the rarer it is. A word in no chunk cannot match, so its weight is 0 too.
+        """
+        count = self.counts.get(word.lower(), 0)
+        return math.log(self.total / count) if count else 0.0
+
+
+async def _term_stats(
+    session: AsyncSession, words: list[str], tenant_id: uuid.UUID
+) -> _TermStats | None:
+    """Count, in one pass over the tenant's chunks, how many contain each word.
+
+    ``None`` when there is nothing to count or the tenant has fewer than
+    ``MIN_CHUNKS_FOR_TERM_FREQUENCY`` chunks: with a handful of chunks a word's
+    frequency means nothing.
     """
     distinct = sorted({word.lower() for word in words if word.lower() != "or"})
     if not distinct:
-        return set()
+        return None
     counts = [
         func.count().filter(Chunk.content_tsv.op("@@")(func.websearch_to_tsquery("english", word)))
         for word in distinct
@@ -136,25 +162,53 @@ async def _common_words(
     )
     total, *per_word = result.one()
     if total < MIN_CHUNKS_FOR_TERM_FREQUENCY:
-        return set()
-    return {
-        word for word, count in zip(distinct, per_word, strict=True) if count / total > max_share
-    }
+        return None
+    return _TermStats(total, dict(zip(distinct, per_word, strict=True)))
 
 
-async def _without_common_words(
-    session: AsyncSession, query: str, tenant_id: uuid.UUID, max_share: float
-) -> str:
-    """``query`` without its words that occur in most chunks; as typed when that cannot apply."""
-    if max_share >= 1.0 or _STRICT_SYNTAX.search(query):
+def _without_common_words(query: str, stats: _TermStats | None, max_share: float) -> str:
+    """``query`` without its words in more than ``max_share`` of the chunks; else as typed."""
+    if stats is None or max_share >= 1.0:
         return query
-    common = await _common_words(session, _WORD.findall(query), tenant_id, max_share)
+    common = {word.lower() for word in _WORD.findall(query) if stats.share(word) > max_share}
     if not common:
         return query
     reduced = _WORD.sub(lambda word: "" if word.group().lower() in common else word.group(), query)
     if not any(word.lower() != "or" for word in _WORD.findall(reduced)):
         return query  # nothing but common words: keep them rather than search for nothing
     return " ".join(reduced.split())
+
+
+async def _rarity_weighted_rows(
+    session: AsyncSession,
+    words: list[str],
+    stats: _TermStats,
+    limit: int,
+    tenant_id: uuid.UUID,
+) -> list[SearchResult]:
+    """Chunks containing any of ``words``, ranked by the summed rarity of the words they hold.
+
+    ``ts_rank`` gives every word the same weight, so a chunk that matches three common
+    words (api, documentation, page) outranks the one chunk with the single rare word the
+    question is about. Here each matched word counts ``ln(chunks / chunks containing it)``,
+    so a rare word outweighs several common ones. Ties fall back to ``ts_rank``, and the
+    score returned is the summed weight.
+    """
+    or_query = func.websearch_to_tsquery("english", " or ".join(words))
+    total: ColumnElement[float] = literal(0.0)
+    for word in words:
+        matches = Chunk.content_tsv.op("@@")(func.websearch_to_tsquery("english", word))
+        total = total + case((matches, stats.rarity(word)), else_=0.0)
+    weight = total.label("weight")
+    rank = func.ts_rank(Chunk.content_tsv, or_query)
+    result = await session.execute(
+        select(Chunk, Document, weight)
+        .join(Document, Chunk.document_id == Document.id)
+        .where(Chunk.content_tsv.op("@@")(or_query), Chunk.tenant_id == tenant_id)
+        .order_by(weight.desc(), rank.desc())
+        .limit(limit)
+    )
+    return [(chunk, document, float(score)) for chunk, document, score in result.all()]
 
 
 async def keyword_search(
@@ -164,26 +218,33 @@ async def keyword_search(
     *,
     tenant_id: uuid.UUID,
     max_term_share: float = 1.0,
+    rarity_weighting: bool = False,
 ) -> list[SearchResult]:
     """Return ``tenant_id``'s chunks that best match ``query`` by full-text search, best first.
 
     Uses ``websearch_to_tsquery``, the parser built for text a user actually
     types (bare words, ``"quoted phrases"``, ``or``, ``-excluded``) - unlike
-    ``to_tsquery`` it never raises on a plain sentence. The query is run as typed;
-    if that finds nothing, it is run once more as an OR of its words
-    (``or_fallback_query``). Words that occur in more than ``max_term_share`` of the
-    tenant's chunks are left out first (``_without_common_words``); 1.0 leaves the query
-    alone. Score is ``ts_rank``, PostgreSQL's own relevance
-    measure for a tsquery match against a tsvector. The GIN index behind ``@@`` is
-    an exact match, not an approximation, so - unlike ``vector_search`` - adding a
-    tenant filter here needs no special handling to stay correct.
+    ``to_tsquery`` it never raises on a plain sentence. Words that occur in more than
+    ``max_term_share`` of the tenant's chunks are left out first (1.0 leaves the query
+    alone). The query is then run as typed, scored by ``ts_rank``, PostgreSQL's own
+    relevance measure; if that finds nothing, it is run once more as an OR of its words
+    (``or_fallback_query``), ranked by the summed rarity of the matched words when
+    ``rarity_weighting`` is on (``_rarity_weighted_rows``), else by ``ts_rank``. The GIN
+    index behind ``@@`` is an exact match, not an approximation, so - unlike
+    ``vector_search`` - adding a tenant filter here needs no special handling to stay correct.
     """
-    query = await _without_common_words(session, query, tenant_id, max_term_share)
+    stats = None
+    if (max_term_share < 1.0 or rarity_weighting) and not _STRICT_SYNTAX.search(query):
+        stats = await _term_stats(session, _WORD.findall(query), tenant_id)
+    query = _without_common_words(query, stats, max_term_share)
     rows = await _keyword_rows(session, query, limit, tenant_id)
     if not rows:
-        fallback = or_fallback_query(query)
-        if fallback is not None:
-            rows = await _keyword_rows(session, fallback, limit, tenant_id)
+        words = _or_words(query)
+        if words is not None:
+            if rarity_weighting and stats is not None:
+                rows = await _rarity_weighted_rows(session, words, stats, limit, tenant_id)
+            else:
+                rows = await _keyword_rows(session, " or ".join(words), limit, tenant_id)
     return rows
 
 
@@ -240,6 +301,7 @@ async def hybrid_search_with_provenance(
     candidates: int,
     tenant_id: uuid.UUID,
     max_term_share: float = 1.0,
+    rarity_weighting: bool = False,
 ) -> tuple[list[SearchResult], dict[uuid.UUID, ChunkProvenance]]:
     """Retrieve up to ``candidates`` of ``tenant_id``'s chunks for a question, using ``mode``.
 
@@ -270,7 +332,12 @@ async def hybrid_search_with_provenance(
         }
     if mode == "keyword":
         rows = await keyword_search(
-            session, query, candidates, tenant_id=tenant_id, max_term_share=max_term_share
+            session,
+            query,
+            candidates,
+            tenant_id=tenant_id,
+            max_term_share=max_term_share,
+            rarity_weighting=rarity_weighting,
         )
         keyword_ranks = _ranks(rows)
         return rows, {
@@ -280,7 +347,12 @@ async def hybrid_search_with_provenance(
 
     vector_rows = await vector_search(session, embedding, candidates, tenant_id=tenant_id)
     keyword_rows = await keyword_search(
-        session, query, candidates, tenant_id=tenant_id, max_term_share=max_term_share
+        session,
+        query,
+        candidates,
+        tenant_id=tenant_id,
+        max_term_share=max_term_share,
+        rarity_weighting=rarity_weighting,
     )
     fused = reciprocal_rank_fusion([vector_rows, keyword_rows])
     vector_ranks = _ranks(vector_rows)
@@ -300,6 +372,7 @@ async def hybrid_search(
     candidates: int,
     tenant_id: uuid.UUID,
     max_term_share: float = 1.0,
+    rarity_weighting: bool = False,
 ) -> list[SearchResult]:
     """Retrieve up to ``candidates`` chunks for a question, using ``mode``.
 
@@ -314,6 +387,7 @@ async def hybrid_search(
         candidates=candidates,
         tenant_id=tenant_id,
         max_term_share=max_term_share,
+        rarity_weighting=rarity_weighting,
     )
     return rows
 
