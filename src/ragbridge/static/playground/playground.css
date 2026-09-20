@@ -260,3 +260,9 @@ fieldset .check {
   margin: 0.25rem 0 0;
   padding-left: 1.25rem;
 }
+
+/* Given to the model as surrounding text, but not returned by retrieval. */
+.block-context {
+  border-left-style: dashed;
+  background: var(--panel);
+}
