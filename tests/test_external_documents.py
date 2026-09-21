@@ -9,11 +9,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx2 import Response
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from ragbridge.cache import FakeCache, get_cache
 from ragbridge.config import Settings, get_settings
-from ragbridge.db.models import Document, Tenant
+from ragbridge.db.models import Chunk, Document, Tenant
+from ragbridge.embeddings import FakeEmbedder, get_embedder
 from tests.helpers import fetch_chunks
 
 
@@ -319,3 +321,214 @@ def test_a_synced_document_is_listed_and_deletable_by_uuid(
     assert [d["id"] for d in client.get("/documents").json()] == [document_id]
     assert client.delete(f"/documents/{document_id}").status_code == 204
     assert client.get("/documents/external/post:42").status_code == 404
+
+
+class CountingEmbedder:
+    """A ``FakeEmbedder`` that remembers every text it was asked to embed."""
+
+    def __init__(self, dimension: int) -> None:
+        self._inner = FakeEmbedder(dimension)
+        self.texts: list[str] = []
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.texts.extend(texts)
+        return await self._inner.embed(texts)
+
+
+@pytest.fixture
+def embedder(app_with_database: FastAPI) -> CountingEmbedder:
+    counting = CountingEmbedder(get_settings().embedding_dimension)
+    app_with_database.dependency_overrides[get_embedder] = lambda: counting
+    return counting
+
+
+@pytest.fixture
+def cache(app_with_database: FastAPI) -> FakeCache:
+    fake = FakeCache()
+    app_with_database.dependency_overrides[get_cache] = lambda: fake
+    return fake
+
+
+async def _tenant_id(app: FastAPI, name: str = "test-tenant") -> uuid.UUID:
+    session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+    async with session_factory() as session:
+        return (await session.execute(select(Tenant.id).where(Tenant.name == name))).scalar_one()
+
+
+def _corpus_version(app: FastAPI, cache: FakeCache) -> str | None:
+    return asyncio.run(cache.get(f"corpus_version:{asyncio.run(_tenant_id(app))}"))
+
+
+def _chunk_ids(app: FastAPI, document_id: str) -> list[uuid.UUID]:
+    chunks = asyncio.run(fetch_chunks(app.state.session_factory, uuid.UUID(document_id)))
+    return [chunk.id for chunk in chunks]
+
+
+def test_sending_the_same_record_again_changes_nothing_and_embeds_nothing(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    first = _put(client).json()["document"]
+    embedded_before = list(embedder.texts)
+
+    response = _put(client)
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "unchanged"
+    assert response.json()["document"]["id"] == first["id"]
+    assert response.json()["document"]["updated_at"] == first["updated_at"]
+    assert embedder.texts == embedded_before
+    assert len(embedded_before) == 1
+
+
+def test_a_new_title_updates_the_document_without_embedding(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder, cache: FakeCache
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    first = _put(client).json()["document"]
+    chunks_before = _chunk_ids(app_with_database, first["id"])
+    embedded_before = list(embedder.texts)
+    version_before = _corpus_version(app_with_database, cache)
+
+    response = _put(client, title="Returns policy")
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "updated"
+    assert response.json()["document"]["filename"] == "Returns policy"
+    assert embedder.texts == embedded_before
+    assert _chunk_ids(app_with_database, first["id"]) == chunks_before
+    assert _corpus_version(app_with_database, cache) != version_before
+
+
+def test_new_metadata_updates_the_document_without_touching_cached_answers(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder, cache: FakeCache
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)
+    embedded_before = list(embedder.texts)
+    version_before = _corpus_version(app_with_database, cache)
+
+    response = _put(client, metadata={"lang": "de"})
+
+    assert response.json()["result"] == "updated"
+    assert response.json()["document"]["metadata"] == {"lang": "de"}
+    assert embedder.texts == embedded_before
+    assert _corpus_version(app_with_database, cache) == version_before
+
+
+def test_new_text_replaces_the_chunks_and_embeds_only_the_new_text(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder, cache: FakeCache
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    first = _put(client).json()["document"]
+    old_chunks = _chunk_ids(app_with_database, first["id"])
+    version_before = _corpus_version(app_with_database, cache)
+
+    response = _put(client, content="Refunds now take 30 days.")
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "replaced"
+    assert response.json()["document"]["id"] == first["id"]
+    assert response.json()["document"]["created_at"] == first["created_at"]
+    assert embedder.texts[-1] == "Refunds now take 30 days."
+    chunks = asyncio.run(
+        fetch_chunks(app_with_database.state.session_factory, uuid.UUID(first["id"]))
+    )
+    assert [chunk.content for chunk in chunks] == ["Refunds now take 30 days."]
+    assert not set(old_chunks) & {chunk.id for chunk in chunks}
+    assert _corpus_version(app_with_database, cache) != version_before
+    assert len(_documents(client)) == 1
+
+
+def _documents(client: TestClient) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = client.get("/documents").json()
+    return documents
+
+
+def test_replacing_long_text_with_short_text_leaves_no_old_chunks(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    long_text = "\n\n".join(f"Paragraph {i}. " + "word " * 150 for i in range(12))
+    document = _put(client, content=long_text).json()["document"]
+    assert len(_chunk_ids(app_with_database, document["id"])) > 1
+
+    _put(client, content="Short now.")
+
+    chunks = asyncio.run(
+        fetch_chunks(app_with_database.state.session_factory, uuid.UUID(document["id"]))
+    )
+    assert [(chunk.chunk_index, chunk.content) for chunk in chunks] == [(0, "Short now.")]
+
+
+def test_a_newer_source_time_alone_is_remembered_without_embedding(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)
+    embedded_before = list(embedder.texts)
+
+    response = _put(client, source_updated_at="2026-09-22T08:00:00Z")
+
+    assert response.json()["result"] == "unchanged"
+    assert response.json()["document"]["source_updated_at"] == "2026-09-22T08:00:00Z"
+    assert embedder.texts == embedded_before
+
+
+def _force_status(app: FastAPI, document_id: str, status: str, *, drop_chunks: bool) -> None:
+    async def run() -> None:
+        session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+        async with session_factory() as session:
+            document = await session.get(Document, uuid.UUID(document_id))
+            assert document is not None
+            document.status = status
+            document.error = "boom" if status == "failed" else None
+            if drop_chunks:
+                await session.execute(delete(Chunk).where(Chunk.document_id == document.id))
+            await session.commit()
+
+    asyncio.run(run())
+
+
+def test_the_same_text_is_processed_again_after_a_failed_attempt(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    document = _put(client).json()["document"]
+    _force_status(app_with_database, document["id"], "failed", drop_chunks=True)
+
+    response = _put(client)
+
+    assert response.json()["result"] == "replaced"
+    assert response.json()["document"]["status"] == "ready"
+    assert response.json()["document"]["error"] is None
+    assert len(_chunk_ids(app_with_database, document["id"])) == 1
+    assert len(embedder.texts) == 2
+
+
+def test_the_same_text_is_not_queued_again_while_it_is_still_processing(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    document = _put(client).json()["document"]
+    _force_status(app_with_database, document["id"], "processing", drop_chunks=False)
+
+    response = _put(client)
+
+    assert response.json()["result"] == "unchanged"
+    assert response.json()["document"]["status"] == "processing"
+    assert len(embedder.texts) == 1
+
+
+def test_one_tenants_put_never_touches_another_tenants_document(
+    app_with_database: FastAPI, tenant_with_key: str, second_tenant_with_key: str
+) -> None:
+    first = _put(_client(app_with_database, tenant_with_key)).json()["document"]
+
+    second = _put(_client(app_with_database, second_tenant_with_key), content="Other text.")
+
+    assert second.json()["result"] == "created"
+    assert (
+        _client(app_with_database, tenant_with_key).get("/documents/external/post:42").json()
+        == first
+    )

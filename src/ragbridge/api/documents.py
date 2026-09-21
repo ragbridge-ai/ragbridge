@@ -20,7 +20,7 @@ from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.ingestion import ingest_document, parse_pages
 from ragbridge.jobs import JobQueue, get_job_queue
-from ragbridge.sync import ExternalIdTaken, SyncPayload, SyncResult, put_external_document
+from ragbridge.sync import SyncConflict, SyncPayload, SyncResult, put_external_document
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -291,7 +291,10 @@ async def put_document_by_external_id(
 ) -> ExternalDocumentResult:
     """Create or replace the document your application syncs under ``external_id``.
 
-    Safe to repeat: sending the same record again changes nothing.
+    Safe to repeat: sending the same record again changes nothing. ``result`` says
+    what happened: ``created`` (201), ``replaced`` (new text, re-embedded),
+    ``updated`` (title or metadata only), or ``unchanged``. Text that has not
+    changed is never re-chunked or re-embedded (decision 6, docs/plans/external-ids.md).
     """
     if len(body.content.encode()) > settings.max_upload_size:
         raise HTTPException(
@@ -303,9 +306,10 @@ async def put_document_by_external_id(
         outcome = await put_external_document(
             session, tenant.id, external_id, payload, settings, embedder, cache
         )
-    except ExternalIdTaken as exc:
+    except SyncConflict as exc:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT, detail="replacing is not implemented yet"
+            status_code=status.HTTP_409_CONFLICT,
+            detail="this id was changed by another request while writing; retry",
         ) from exc
 
     if outcome.result == "created":
