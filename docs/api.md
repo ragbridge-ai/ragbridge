@@ -281,7 +281,8 @@ worker, as for uploads: the response is `202`, and you poll `GET /documents/exte
 until `status` is `ready` (or `failed`, with `error`). When it replaces an older version, **the
 old version stays searchable until the new one is ready**, and stays if the new one fails; send
 the same record again to retry a `failed` one. If you send new text while an older version is
-still queued, only the newest is embedded. If ragbridge cannot reach its queue you get `503`
+still queued, that older job is skipped and only the newest is stored; a job that is already
+running finishes its embedding, then discards it. If ragbridge cannot reach its queue you get `503`
 and the document is marked `failed`, so sending the record again works.
 
 ### Concurrent calls

@@ -328,10 +328,37 @@ Built as planned, in the steps above, with these differences found while buildin
   so most concurrency tests would pass even without `SELECT ... FOR UPDATE`; that was checked by
   removing the lock. One test now takes only the lock, and fails without it. The lock closes the
   window before a writer's first `UPDATE`, which the ordering check depends on.
+- **A burst of edits costs one *stored* version, not always one embedding run.** A superseded
+  job that has not started yet skips itself in about 10 ms. One that is already embedding
+  finishes, finds the hash has moved on at the swap, and discards its work, so a burst can cost
+  one wasted embedding run. Decision 9 said "one embedding run"; it is "one stored version".
 - **Removing `ON CONFLICT` fails the concurrency tests with a unique violation, and never
   creates a second row**: the constraint is the guarantee, as decision 8 says.
 
-**Not verified.** Nothing here ran against a real Redis and worker process, or a real embedding
-model: the tests use `FakeEmbedder`, a recording queue, and the test database. The PHP example
-in the README is syntax-checked (`php -l`) but was not run against a server or in a Laravel
-app.
+**Run for real, after the tests.** The branch's image was built and run beside the development
+stack, with its own Postgres and Redis, the real arq worker and Ollama (`nomic-embed-text`,
+`qwen2.5:7b`), and a copy of the development database at the previous migration head (4
+documents, 70 chunks). Verified there:
+
+- The migration ran on that copy: row counts unchanged, every `external_id` `NULL`, the old
+  constraint replaced by the two new ones.
+- Existing behaviour: plain upload 201, duplicate upload 200 with the same id, a 150 KB upload
+  202 then `ready` from the worker, and searchable.
+- `PUT` create 201 (60 ms), the same `PUT` again `unchanged` (10 ms), title change `updated`,
+  new text `replaced` with the same document id, older `source_updated_at` `stale`. `/query`
+  with the real chat model cited the synced document by its title.
+- Ten simultaneous `PUT`s of one new id gave one document (one 201, nine 200); eight of
+  different text gave one document with one set of chunks.
+- A 150 KB replace answered 202 while the old version stayed searchable, then swapped after the
+  worker. Three rapid 150 KB edits, three rounds: only the newest text was stored each time.
+- `DELETE` 204, 204 again, 204 for an unknown id; other tenants' documents untouched.
+
+The end-to-end script's own first run had one failing check, a flaw in the check (the keyword
+search falls back to matching a word, so a search for a removed marker still found the new
+text's chunk); the stored state was correct, and the check was rewritten to read the chunks.
+
+**Not verified.** No real hosted embedding or chat provider, and nothing on a large production
+table (the migration takes a lock while it builds the partial index). A rolling deploy where the
+old worker meets a job with the new hash argument was not tried: deploy the app and the worker
+together. The PHP example in the README is syntax-checked (`php -l`) but was not run against a
+server or in a Laravel app.
