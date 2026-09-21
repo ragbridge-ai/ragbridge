@@ -226,7 +226,12 @@ def _remember_source_time(document: Document, payload: SyncPayload) -> None:
 async def _lock_existing(
     session: AsyncSession, tenant_id: uuid.UUID, external_id: str
 ) -> Document | None:
-    """The row for ``external_id``, locked until this transaction ends."""
+    """The row for ``external_id``, locked until this transaction ends.
+
+    Nothing else would make a competing writer wait until this one has sent its
+    first ``UPDATE``; the lock closes that window, and the ordering check of
+    ``_is_older_than_stored`` depends on it.
+    """
     document: Document | None = await session.scalar(
         select(Document)
         .where(Document.tenant_id == tenant_id, Document.external_id == external_id)
