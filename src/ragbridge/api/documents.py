@@ -262,7 +262,11 @@ async def delete_document(
     await cache.incr(f"corpus_version:{tenant.id}")
 
 
-@router.get("/external/{external_id}", response_model=DocumentOut)
+@router.get(
+    "/external/{external_id}",
+    response_model=DocumentOut,
+    responses={status.HTTP_404_NOT_FOUND: {"description": "No document has this external id."}},
+)
 async def get_document_by_external_id(
     external_id: ExternalId,
     session: Annotated[AsyncSession, Depends(get_session)],

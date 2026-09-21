@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from importlib.metadata import version
 
 from fastapi import FastAPI
 
@@ -50,6 +51,7 @@ def create_app() -> FastAPI:
     # serving a docs page that cannot load its own schema.
     app = FastAPI(
         title=settings.app_name,
+        version=version("ragbridge"),
         lifespan=lifespan,
         docs_url="/docs" if settings.enable_docs else None,
         openapi_url="/openapi.json" if settings.enable_docs else None,
