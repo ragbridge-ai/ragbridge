@@ -1,5 +1,8 @@
 """Tests for the machinery that keeps the suite away from the development database."""
 
+import os
+from pathlib import Path
+
 import pytest
 from sqlalchemy.engine import make_url
 
@@ -64,3 +67,27 @@ def test_this_suite_is_really_running_against_a_test_database() -> None:
     """
     assert (make_url(Settings().database_url).database or "").endswith("_test")
     assert (make_url(get_settings().database_url).database or "").endswith("_test")
+
+
+def test_the_suite_ignores_a_developers_env_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A local ``.env`` must not change what the tests see.
+
+    The file is written to a directory the test works in, exactly where
+    ``Settings`` would look for it if it were still reading ``.env``.
+    """
+    (tmp_path / ".env").write_text("RERANK_ENABLED=true\nRERANK_BACKEND=chat\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RERANK_ENABLED", raising=False)
+    monkeypatch.delenv("RERANK_BACKEND", raising=False)
+
+    settings = Settings()
+
+    assert settings.rerank_enabled is False
+    assert settings.rerank_backend == "api"
+
+
+def test_importing_litellm_does_not_copy_the_env_file_into_the_environment() -> None:
+    """``litellm`` loads ``.env`` into ``os.environ`` on import, but only in ``DEV`` mode."""
+    assert os.environ["LITELLM_MODE"] != "DEV"

@@ -59,5 +59,19 @@ def point_environment_at_test_database() -> None:
     Must run before anything calls ``get_settings()``: it is cached, and
     ``ragbridge.main`` calls it at import time. ``tests/__init__.py`` calls
     this, and Python imports a package before the modules inside it.
+
+    It also keeps ``.env`` out of the rest of the process. ``.env`` is a
+    developer's own setup (a reranker, a chat model, a cache), and tests that
+    build ``Settings()`` expect the code's defaults, so a local
+    ``RERANK_ENABLED=true`` used to fail tests that had nothing wrong. It got in
+    by two doors, and both are closed here:
+
+    - ``Settings`` reads the file itself, so that is switched off. The one value
+      the suite needs from it, the database URL, is read first and handed on
+      through the environment.
+    - ``import litellm`` copies ``.env`` into ``os.environ`` unless
+      ``LITELLM_MODE`` is not ``DEV``, so it is set to ``PRODUCTION``.
     """
     os.environ["DATABASE_URL"] = derive_test_database_url(Settings().database_url)
+    Settings.model_config["env_file"] = None
+    os.environ["LITELLM_MODE"] = "PRODUCTION"
