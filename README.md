@@ -94,7 +94,7 @@ Details, the response, ordering with `source_updated_at`, and the limits:
 
 ## Status
 
-**v1.2.0.** Measured, with the limits written down: `/agent` depends heavily on the chat model
+**v1.3.0.** Measured, with the limits written down: `/agent` depends heavily on the chat model
 (`qwen2.5:7b` is much better than the default `llama3.2`, see [evaluation](docs/evaluation.md)),
 and the playground's JavaScript is checked by hand, not by CI. **Not yet run on a real server or
 with a real domain**: the [deployment guide](docs/deployment.md) says exactly what was verified.
