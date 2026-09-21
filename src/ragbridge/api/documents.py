@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Response, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +23,25 @@ from ragbridge.jobs import JobQueue, get_job_queue
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 ALLOWED_CONTENT_TYPES = {"text/plain", "text/markdown", "application/pdf"}
+
+EXTERNAL_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,254}$"
+ExternalId = Annotated[
+    str,
+    Path(
+        pattern=EXTERNAL_ID_PATTERN,
+        description=(
+            "Your application's id for the record: 1-255 ASCII letters, digits or "
+            "`. _ : @ -`, starting with a letter or digit. No `/`."
+        ),
+        examples=["post:42"],
+    ),
+]
+"""The client application's id for a record (decision 3, docs/plans/external-ids.md).
+
+No ``/``: an encoded slash is decoded before routing, so the id's meaning would
+depend on every proxy in between. Starting with a letter or digit rules out ``.``
+and ``..``. ASCII only, so two ids that look alike cannot differ by Unicode form.
+"""
 
 
 class DocumentOut(BaseModel):
@@ -196,3 +215,25 @@ async def delete_document(
     await session.delete(document)
     await session.commit()
     await cache.incr(f"corpus_version:{tenant.id}")
+
+
+@router.get("/external/{external_id}", response_model=DocumentOut)
+async def get_document_by_external_id(
+    external_id: ExternalId,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
+) -> Document:
+    """Fetch the document your application syncs under ``external_id``."""
+    document = await _find_by_external_id(session, tenant, external_id)
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+    return document
+
+
+async def _find_by_external_id(
+    session: AsyncSession, tenant: Tenant, external_id: str
+) -> Document | None:
+    document: Document | None = await session.scalar(
+        select(Document).where(Document.tenant_id == tenant.id, Document.external_id == external_id)
+    )
+    return document
