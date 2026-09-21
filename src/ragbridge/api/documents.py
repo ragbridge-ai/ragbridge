@@ -4,10 +4,10 @@ import hashlib
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,11 +31,17 @@ class DocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    external_id: str | None
+    """The client application's id for this record; ``None`` for an upload."""
     filename: str
     content_type: str
     status: Literal["pending", "processing", "ready", "failed"]
     error: str | None
+    # The column is ``metadata_`` because ``metadata`` is SQLAlchemy's own attribute.
+    metadata: dict[str, Any] = Field(validation_alias="metadata_")
+    source_updated_at: datetime | None
     created_at: datetime
+    updated_at: datetime
 
 
 @router.post("", response_model=DocumentOut)
@@ -64,7 +70,10 @@ async def upload_document(
     returns the existing document instead of redoing that work - but
     only within the same tenant. sha256 is unique per tenant, not
     globally, so two tenants uploading the same file each get their own
-    document (decision 3, docs/plans/phase-3.md).
+    document (decision 3, docs/plans/phase-3.md). It is compared only
+    with other uploads: a document a client keeps in sync by external id
+    can hold the same text, and a later sync would change or delete it
+    under the uploader (decision 2, docs/plans/external-ids.md).
     """
     filename = file.filename
     content_type = file.content_type
@@ -84,7 +93,11 @@ async def upload_document(
 
     sha256 = hashlib.sha256(raw).hexdigest()
     existing = await session.scalar(
-        select(Document).where(Document.tenant_id == tenant.id, Document.sha256 == sha256)
+        select(Document).where(
+            Document.tenant_id == tenant.id,
+            Document.sha256 == sha256,
+            Document.external_id.is_(None),
+        )
     )
     if existing is not None:
         response.status_code = status.HTTP_200_OK

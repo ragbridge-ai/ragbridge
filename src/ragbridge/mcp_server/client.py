@@ -7,14 +7,34 @@ goes through the normal REST layer, so API-key auth and tenant scoping are
 enforced in exactly one place and cannot drift between transports.
 """
 
+import uuid
+from datetime import datetime
 from types import TracebackType
-from typing import Self
+from typing import Literal, Self
 
 import httpx
+from pydantic import BaseModel
 
-from ragbridge.api.documents import DocumentOut
 from ragbridge.api.query import QueryResponse
 from ragbridge.api.search import ExplainableSearchResponse, SearchResponse
+
+
+class DocumentSummary(BaseModel):
+    """What the ``list_documents`` tool shows about a document.
+
+    Its own model, not ``DocumentOut``: the REST response grows fields (the
+    external id, metadata, timestamps) and a model shared with a tool would
+    change the tool's output schema for every connected client at the same
+    time - the same reason ``/search`` has separate ``Explainable*`` models
+    (docs/adr/0009-playground-as-a-static-page-served-by-the-app.md).
+    """
+
+    id: uuid.UUID
+    filename: str
+    content_type: str
+    status: Literal["pending", "processing", "ready", "failed"]
+    error: str | None
+    created_at: datetime
 
 
 class RagbridgeError(Exception):
@@ -57,9 +77,9 @@ class RagbridgeClient:
         response = await self._request("POST", "/query", json={"question": question})
         return QueryResponse.model_validate(response.json())
 
-    async def list_documents(self) -> list[DocumentOut]:
+    async def list_documents(self) -> list[DocumentSummary]:
         response = await self._request("GET", "/documents")
-        return [DocumentOut.model_validate(item) for item in response.json()]
+        return [DocumentSummary.model_validate(item) for item in response.json()]
 
     async def _request(
         self, method: str, path: str, *, json: dict[str, object] | None = None
