@@ -1,6 +1,6 @@
 # AGENTS.md — ragbridge
 
-This file gives AI coding assistants (Cursor, Claude Code, and others) the full context of this project.
+This file gives coding agents and automated contributors the context they need to work on this repository.
 Read it before making any change.
 
 ## 1. What this project is
@@ -48,35 +48,35 @@ Architecture Decision Record (ADR) in `docs/adr/`.
 
 ## 4. Roadmap
 
-### Phase 0 — Setup (Week 1) ✅ Done
+### Phase 0 — Setup ✅ Done
 Clean project skeleton: `uv` project with src layout, FastAPI app factory, `/health` endpoint,
 tests, ruff, mypy, Docker Compose with PostgreSQL + pgvector, GitHub Actions CI, README, LICENSE.
 Output: public repo with green CI.
 
-### Phase 1 — Basic RAG (Weeks 2–4)
+### Phase 1 — Basic RAG
 Upload documents (text, Markdown, PDF), chunking, embeddings, storage in pgvector,
 `/query` endpoint that returns an answer with sources, LiteLLM, SQLAlchemy + Alembic.
 Output: `v0.1.0`, runs with `docker compose up`.
 See the detailed plan: [docs/plans/phase-1.md](docs/plans/phase-1.md).
 
-### Phase 2 — Quality (Weeks 5–6)
+### Phase 2 — Quality
 Hybrid search (pgvector + PostgreSQL full-text search), reranking, test dataset,
 RAGAS evaluation with scores in the README.
 See the detailed plan: [docs/plans/phase-2.md](docs/plans/phase-2.md).
 
-### Phase 3 — Production-ready (Weeks 7–8)
+### Phase 3 — Production-ready
 API key authentication, multi-tenancy, background jobs for large files (Redis + worker),
 caching, tracing and cost tracking with Langfuse.
 Output: `v0.2.0`.
 See the detailed plan: [docs/plans/phase-3.md](docs/plans/phase-3.md).
 
-### Phase 4 — Agents and MCP (Weeks 9–10)
+### Phase 4 — Agents and MCP
 Multi-step agent mode (own bounded loop - LangGraph was evaluated and rejected,
 see the plan's decision 1), MCP server exposing search over a tenant's documents.
 Output: `v0.3.0`.
 See the detailed plan: [docs/plans/phase-4.md](docs/plans/phase-4.md).
 
-### Phase 5 — Deploy and release (Weeks 11–12)
+### Phase 5 — Deploy and release
 Self-hosted deployment on a single Linux host (hardened image, production Compose file
 with a Caddy TLS proxy, production-safe settings), full docs, ADRs, demo in README.
 AWS + Terraform was evaluated and dropped - see the plan's decision 1.
@@ -120,7 +120,6 @@ ragbridge/
 ├── .gitignore
 ├── LICENSE
 ├── AGENTS.md
-├── CLAUDE.md
 └── README.md
 ```
 
@@ -153,7 +152,7 @@ docker compose up -d                      # start PostgreSQL + pgvector
 1. Work on one phase or one step at a time. Do not jump ahead to later phases.
 2. Before writing code, give a short plan and wait for approval if the task is large.
 3. After changes, run tests, ruff, and mypy, and make sure they pass.
-4. At the end, summarize what you changed, why, and what the maintainer should learn from it.
+4. At the end, summarize what you changed, why, and any trade-offs.
 5. Never commit to `main` directly. Work on one feature branch per step and push
    only that branch. Never merge, push to `main`, force-push, create tags,
    publish packages, or change repository settings. The maintainer opens and
