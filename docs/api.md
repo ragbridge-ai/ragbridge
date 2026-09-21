@@ -231,14 +231,19 @@ curl -X PUT http://localhost:8000/documents/external/article:42 \
 |---|---|
 | `PUT /documents/external/{external_id}` | Create the document, or replace it. Send the record's **current** state every time. |
 | `GET /documents/external/{external_id}` | The document, or 404. Poll it after a `202`. |
-| `DELETE /documents/external/{external_id}` | Delete it. **204 also when it does not exist**, so a retried delete is not an error. |
+| `DELETE /documents/external/{external_id}` | Delete it. **204 also when it does not exist**, so a retried delete is not an error. (For a *valid* id: an invalid one is still a 422.) |
 
 The body of `PUT` has `title` (1-500 characters; shown as the document's name in
 `sources`), `content` (text with at least one character that is not whitespace, at most
-`MAX_UPLOAD_SIZE` bytes as UTF-8), and optionally `metadata` (a JSON object, at most 16 KB,
-returned as sent; it is **not** searched yet) and `source_updated_at` (with a time zone). A
-document made this way is listed by `GET /documents` and deletable by its UUID like any other,
-and is searched exactly like an upload.
+`MAX_UPLOAD_SIZE` bytes as UTF-8), and optionally `metadata` (a JSON object, at most 16 KB; it is **not** searched yet) and
+`source_updated_at` (with a time zone).
+
+`PUT` replaces the record's whole state, so **omitting `metadata` on an existing document clears
+it** (it becomes `{}`), while omitting `source_updated_at` keeps the stored time. `metadata` comes
+back with the values you sent, but **JSON object key order is not preserved**, and
+`source_updated_at` comes back in UTC (`Z`), microseconds kept. A document made this way is
+listed by `GET /documents` and deletable by its UUID like any other, and is searched exactly like
+an upload.
 
 ### What `result` means
 
@@ -268,9 +273,10 @@ you make the call.
 
 `external_id` is 1-255 characters from `A-Z a-z 0-9 . _ : @ -` and starts with a letter or
 digit (`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,254}$`); it is case-sensitive, and unique per tenant, so
-two applications can both have an `article:42`. Anything else is a `422` that names the
-pattern. There is no `/`: an encoded slash is decoded before ragbridge sees the path, so its
-meaning would depend on every proxy in between; use `article:42` or `wp_posts.42`. None of the
+two applications can both have an `article:42`. A character outside that set is a `422` that names the
+pattern. There is no `/`: an encoded slash (`%2F`) is decoded before ragbridge sees the path, so
+the route does not match and the answer is a **404**, not a 422 (and an empty id is not routed
+either); its meaning would depend on every proxy in between, so use `article:42` or `wp_posts.42`. None of the
 allowed characters needs URL encoding, but encoding is harmless (`rawurlencode('article:42')` is
 `article%3A42`, which arrives as `article:42`).
 
@@ -290,7 +296,9 @@ and the document is marked `failed`, so sending the record again works.
 Two `PUT`s for the same id at the same moment never create two documents: the database
 allows one row per tenant and id, the second call waits for the first and then decides against
 what it saved. Calls for different ids do not wait for each other. A call that keeps losing a
-race with a delete answers `409`; send it again.
+race with a delete answers `409`; send it again. Sending text, then other text, then the first
+text again while the worker is busy is fine: the worker skips jobs whose content is already
+processed or replaced.
 
 ### Not supported yet
 

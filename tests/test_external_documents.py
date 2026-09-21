@@ -981,3 +981,55 @@ def test_a_queued_job_for_a_deleted_document_does_nothing_and_the_id_can_be_reus
     again = _put(client, content=NEW_TEXT)
     assert again.status_code == 202
     assert again.json()["result"] == "created"
+
+
+def test_a_text_sent_again_after_another_one_is_processed_once_and_not_marked_failed(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    """X, then Y, then X again, all before the worker runs anything.
+
+    Two jobs are queued for X's hash. The first one processes X and clears its raw
+    bytes; the second must recognise that the work is already done, not fail with
+    "no raw_content" and mark a healthy document ``failed``.
+    """
+    client = _client(app_with_database, tenant_with_key)
+    document = _put(client, content=NEW_TEXT).json()["document"]
+    _put(client, content=NEWER_TEXT)
+    _put(client, content=NEW_TEXT)
+    assert [sha for _, sha in queue.jobs] == [
+        content_hash(NEW_TEXT),
+        content_hash(NEWER_TEXT),
+        content_hash(NEW_TEXT),
+    ]
+
+    for job in queue.jobs:
+        _run_job(app_with_database, job)
+
+    row = _stored(app_with_database, document["id"])
+    assert (row.status, row.error) == ("ready", None)
+    assert _chunk_texts(app_with_database, document["id"]) == [NEW_TEXT]
+
+
+def test_the_put_schema_documents_every_status_it_can_answer(app_with_database: FastAPI) -> None:
+    operation = app_with_database.openapi()["paths"]["/documents/external/{external_id}"]["put"]
+
+    assert {"200", "201", "202", "409", "413", "422", "503"} <= set(operation["responses"])
+    assert "ExternalDocumentResult" in str(operation["responses"]["202"])
+
+
+def test_a_put_that_keeps_losing_a_race_with_a_delete_answers_409(
+    app_with_database: FastAPI, tenant_with_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row exists when we insert, and is gone when we go to lock it - three times."""
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)
+
+    async def vanished(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr("ragbridge.sync._lock_existing", vanished)
+
+    response = _put(client, title="Another title")
+
+    assert response.status_code == 409
+    assert "retry" in response.json()["detail"]

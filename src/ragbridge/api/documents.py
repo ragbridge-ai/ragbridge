@@ -284,7 +284,33 @@ async def _find_by_external_id(
     return document
 
 
-@router.put("/external/{external_id}", response_model=ExternalDocumentResult)
+@router.put(
+    "/external/{external_id}",
+    response_model=ExternalDocumentResult,
+    responses={
+        status.HTTP_201_CREATED: {
+            "model": ExternalDocumentResult,
+            "description": "A new document, embedded before the response.",
+        },
+        status.HTTP_202_ACCEPTED: {
+            "model": ExternalDocumentResult,
+            "description": "Large text, saved as `pending` and embedded by the worker. "
+            "Poll `GET /documents/external/{external_id}` until `status` is not "
+            "`pending` or `processing`.",
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "The id kept changing under this request (a concurrent delete); "
+            "send it again.",
+        },
+        status.HTTP_413_CONTENT_TOO_LARGE: {
+            "description": "`content` is over `MAX_UPLOAD_SIZE` bytes."
+        },
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "description": "The background queue is down; the document is marked `failed`. "
+            "Send the same record again.",
+        },
+    },
+)
 async def put_document_by_external_id(
     external_id: ExternalId,
     body: ExternalDocumentIn,

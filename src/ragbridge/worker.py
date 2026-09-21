@@ -46,8 +46,11 @@ async def process_document(ctx: JobContext, document_id: str, sha256: str | None
     whose text can be replaced while this job is queued or running. It names
     the content this job was queued for: if the row's hash has moved on, a
     newer write owns the row, and this job does nothing - at the start, before
-    the swap, and before recording a failure. Only the newest version is ever
-    embedded, so a burst of edits costs one run. The old chunks stay
+    the swap, and before recording a failure. It also does nothing when the row
+    is already ``"ready"``: a text sent again after another one (X, Y, X) queues
+    two jobs for X, and the second must not fail on the raw bytes the first
+    already cleared. Only the newest version is ever stored, so a burst of edits
+    leaves one. The old chunks stay
     searchable until the swap, and a failure leaves them in place (decision 9,
     docs/plans/external-ids.md). Uploads pass no hash.
     """
@@ -59,7 +62,7 @@ async def process_document(ctx: JobContext, document_id: str, sha256: str | None
     row_id = uuid.UUID(document_id)
     async with session_factory() as session:
         document = await session.get(Document, row_id)
-        if document is None or _superseded(document, sha256):
+        if document is None or _obsolete(document, sha256):
             return
 
         raw = document.raw_content
@@ -89,21 +92,25 @@ async def process_document(ctx: JobContext, document_id: str, sha256: str | None
         await session.commit()
 
 
-def _superseded(document: Document, sha256: str | None) -> bool:
-    return sha256 is not None and document.sha256 != sha256
+def _obsolete(document: Document, sha256: str | None) -> bool:
+    """A job queued for content the row no longer holds, or already processed.
+
+    Only for jobs that carry a hash; an upload's job passes none and always runs.
+    """
+    return sha256 is not None and (document.sha256 != sha256 or document.status == "ready")
 
 
 async def _lock_current(
     session: AsyncSession, document_id: uuid.UUID, sha256: str | None
 ) -> Document | None:
-    """The document, freshly read and locked - or ``None`` if gone or superseded."""
+    """The document, freshly read and locked - or ``None`` if gone or obsolete."""
     document: Document | None = await session.scalar(
         select(Document)
         .where(Document.id == document_id)
         .with_for_update()
         .execution_options(populate_existing=True)
     )
-    if document is None or _superseded(document, sha256):
+    if document is None or _obsolete(document, sha256):
         return None
     return document
 

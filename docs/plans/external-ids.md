@@ -357,6 +357,16 @@ The end-to-end script's own first run had one failing check, a flaw in the check
 search falls back to matching a word, so a search for a removed marker still found the new
 text's chunk); the stored state was correct, and the check was rewritten to read the chunks.
 
+**Found afterwards, by the PHP client's own live run.** One large document ended `failed` in a
+single run, and could not be reproduced in 14 more. Sending X, then Y, then X again before the
+worker ran queues two jobs for X's hash; the first cleared `raw_content`, and the second failed
+on "no raw_content" and marked a healthy document `failed`. Reproduced in a test and fixed: a job
+that carries a hash does nothing when the row is already `ready`. That the failure seen was this
+one is a likely explanation, not a proven one, since its error message was not captured. The
+same run also showed that `api.md` overstated three things (an encoded slash is a 404, not a 422;
+`metadata` key order is not preserved; omitting `metadata` clears it), now corrected, and that
+the OpenAPI schema listed only 200 for `PUT`; the 409 path had no test.
+
 **Not verified.** No real hosted embedding or chat provider, and nothing on a large production
 table (the migration takes a lock while it builds the partial index). A rolling deploy where the
 old worker meets a job with the new hash argument was not tried: deploy the app and the worker
