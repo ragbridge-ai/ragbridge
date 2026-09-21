@@ -508,3 +508,34 @@ languages, larger documents, and the same models on a server CPU - this was a GP
 `qwen2.5:7b` loads at 4.7 GB, so it does not fit alongside the production stack on a 4 GB
 server (see [deployment.md](deployment.md)).
 
+### Worker concurrency (`WORKER_MAX_JOBS`)
+
+2026-09-21, on the same **Apple M1 Pro with 16 GB** as above (Ollama 0.34.1, `nomic-embed-text`,
+Docker Desktop), through the real stack: the app, an arq worker and Redis in Docker, the model on
+the host. A client reported that large documents sometimes ended `failed` with
+`OllamaException ... /tokenize ... connection reset by peer` (or `EOF`, or `connection refused`).
+The trigger is many large embeddings at once: arq's default is 10 jobs per worker.
+
+One burst is 14 distinct records of about 150 KB, sent with `PUT /documents/external/{id}` all at
+once, then polled until every document is `ready` or `failed`. Every run is counted; the last
+rounds were interleaved (1, 2, 4, 1, 2, 4, ...) so that drift on the machine affects them equally:
+
+| `WORKER_MAX_JOBS` | Bursts | Failed / documents | Time until all were done |
+|---|---|---|---|
+| 10 (arq's default) | 2 | 16 / 28 (57 %) | 41-43 s (half of it failed, so this is not throughput) |
+| 4 | 5 | 9 / 70 (13 %) | 43-46 s |
+| **2 (the new default)** | 10 | 6 / 140 (4 %) | 44-48 s |
+| 1 | 6 | 1 / 84 (1 %) | 56-63 s |
+
+Two is as fast as four in total, because Ollama is the limit, about a fifth faster than one, and
+fails a third as often as four. It is a trade-off, not a fix: **even one job at a time failed once
+in 84**, so part of the failure is Ollama's own and not concurrency. Individual bursts varied a lot
+(at 2, from 0 to 2 failures in 14), so read the rates as rough. The failure is recorded on the
+document as designed; `PUT` again with the same text retries a `failed` external document.
+
+**Limits.** One machine, one model, one host Ollama, and a burst shape (14 large records at once)
+that is deliberately harsh. A hosted embedding provider was not measured and is built for parallel
+requests, so a higher value is reasonable there. The remaining 1-4 % is the case for retrying a
+transient embedding error once inside the worker; that was **not** built or measured. A plain
+upload that fails cannot be retried by uploading the same file again (the duplicate is answered
+with the failed document); that is unchanged and not addressed here.

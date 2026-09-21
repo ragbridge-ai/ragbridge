@@ -185,6 +185,17 @@ class Settings(BaseSettings):
     worker instead of within the request (see ragbridge.jobs, ragbridge.worker).
     """
 
+    worker_max_jobs: int = Field(default=2, ge=1)
+    """How many documents one worker process embeds at the same time (arq's
+    ``max_jobs``; arq's own default is 10).
+
+    Each job sends all of its chunks to the embedding model. With a local Ollama,
+    ten large jobs at once made more than half of them fail; two were as fast in
+    total as four and failed about 4 % of the time (see docs/evaluation.md, "Worker
+    concurrency"). Raise it for a hosted embedding provider, which is built for
+    parallel requests.
+    """
+
     embedding_cache_ttl: int = 86_400
     """Seconds a cached embedding lives. 0 disables the embedding cache.
 
