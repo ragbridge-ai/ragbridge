@@ -11,6 +11,7 @@ smart search over its own data, through an HTTP API, without moving the applicat
 ## What you get
 
 - Upload text, Markdown and PDF documents; large files are processed by a background worker.
+- Keep documents in sync with your own records by **your own ids**: one idempotent `PUT` per record.
 - Hybrid retrieval (vector + keyword) with optional reranking, and answers **with sources**.
 - A bounded multi-step agent endpoint, and an [MCP](https://modelcontextprotocol.io) server.
 - API keys and multi-tenancy: a tenant never sees another tenant's data.
@@ -47,6 +48,7 @@ curl -X POST http://localhost:8000/query \
 | Endpoint | What it does |
 |---|---|
 | `POST /documents`, `GET /documents`, `DELETE /documents/{id}` | Upload, list and delete documents |
+| `PUT`, `GET`, `DELETE /documents/external/{your_id}` | Keep a document in sync with a record of your application |
 | `POST /query` | An answer, with its sources |
 | `POST /search` | The best-matching chunks, without an answer |
 | `POST /agent` | Several searches, then an answer, listing the searches it ran |
@@ -58,6 +60,30 @@ scored by retrieval, score `0.0`).
 
 Add `"explain": true` to `/query` or `/search` to see which search found each chunk.
 Details and examples: [API guide](docs/api.md).
+
+## Keeping it in sync with your application
+
+Give each record's document **your** id, and send the record whenever it is saved. The call
+is idempotent, so a retry or a full re-sync is safe, and text that did not change is never
+embedded again. In a Laravel observer, for example:
+
+```php
+Http::withToken(config('services.ragbridge.key'))
+    ->put(config('services.ragbridge.url').'/documents/external/'.rawurlencode('article:'.$article->id), [
+        'title' => $article->title,
+        'content' => strip_tags($article->body),
+        'metadata' => ['locale' => $article->locale],
+        'source_updated_at' => $article->updated_at->toIso8601String(),
+    ])->throw();
+
+// and in the deleted() hook:
+Http::withToken(config('services.ragbridge.key'))
+    ->delete(config('services.ragbridge.url').'/documents/external/'.rawurlencode('article:'.$article->id))
+    ->throw();
+```
+
+Details, the response, ordering with `source_updated_at`, and the limits:
+[API guide](docs/api.md#keep-documents-in-sync-with-your-records-external-ids).
 
 ## Documentation
 

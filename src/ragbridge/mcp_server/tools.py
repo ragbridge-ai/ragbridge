@@ -20,10 +20,9 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel
 
-from ragbridge.api.documents import DocumentOut
 from ragbridge.api.query import QueryResponse
 from ragbridge.api.search import SearchResponse
-from ragbridge.mcp_server.client import RagbridgeClient, RagbridgeError
+from ragbridge.mcp_server.client import DocumentSummary, RagbridgeClient, RagbridgeError
 
 ClientFactory = Callable[[Context], RagbridgeClient]
 """Returns a client for the request that triggered a tool call."""
@@ -109,7 +108,7 @@ def build_mcp_server(client_for: ClientFactory, *, name: str = "ragbridge") -> M
             "Only documents whose status is 'ready' appear in search results."
         )
     )
-    async def list_documents(ctx: Context) -> list[DocumentOut]:
+    async def list_documents(ctx: Context) -> list[DocumentSummary]:
         async with _open(client_for, ctx) as client:
             return await client.list_documents()
 

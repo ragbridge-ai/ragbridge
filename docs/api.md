@@ -193,6 +193,116 @@ curl -H "Authorization: Bearer <key>" http://localhost:8000/documents/<id>
 curl -H "Authorization: Bearer <key>" -X DELETE http://localhost:8000/documents/<id>
 ```
 
+## Keep documents in sync with your records (external ids)
+
+Uploading files is enough for a folder of PDFs. If your application already has records
+(articles, products, help pages) with their own ids, identify each document by **your**
+id instead. You then never store ragbridge's ids, an edit replaces the old text instead of
+adding a second document, and every call is safe to retry.
+
+```bash
+curl -X PUT http://localhost:8000/documents/external/article:42 \
+  -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"title": "Refund policy",
+       "content": "Refunds are possible within 14 days of purchase.",
+       "metadata": {"locale": "en"},
+       "source_updated_at": "2026-09-21T10:00:00Z"}'
+```
+
+```json
+{
+  "result": "created",
+  "document": {
+    "id": "9d1d1c75-049e-4609-802a-8e3fa21c4a4e",
+    "external_id": "article:42",
+    "filename": "Refund policy",
+    "content_type": "text/plain",
+    "status": "ready",
+    "error": null,
+    "metadata": {"locale": "en"},
+    "source_updated_at": "2026-09-21T10:00:00Z",
+    "created_at": "2026-09-21T14:38:16.201847Z",
+    "updated_at": "2026-09-21T14:38:16.201847Z"
+  }
+}
+```
+
+| Call | What it does |
+|---|---|
+| `PUT /documents/external/{external_id}` | Create the document, or replace it. Send the record's **current** state every time. |
+| `GET /documents/external/{external_id}` | The document, or 404. Poll it after a `202`. |
+| `DELETE /documents/external/{external_id}` | Delete it. **204 also when it does not exist**, so a retried delete is not an error. |
+
+The body of `PUT` has `title` (1-500 characters; shown as the document's name in
+`sources`), `content` (text with at least one character that is not whitespace, at most
+`MAX_UPLOAD_SIZE` bytes as UTF-8), and optionally `metadata` (a JSON object, at most 16 KB,
+returned as sent; it is **not** searched yet) and `source_updated_at` (with a time zone). A
+document made this way is listed by `GET /documents` and deletable by its UUID like any other,
+and is searched exactly like an upload.
+
+### What `result` means
+
+| `result` | Status | What happened |
+|---|---|---|
+| `created` | 201 (202 if queued) | A new document. |
+| `replaced` | 200 (202 if queued) | The text changed: the chunks were replaced and re-embedded. |
+| `updated` | 200 | Only the title or `metadata` changed. **Nothing was re-chunked or re-embedded.** |
+| `unchanged` | 200 | The same record again. Nothing was written. |
+| `stale` | 200 | Ignored: `source_updated_at` is older than the stored one (below). |
+
+Whether the text changed is decided by its SHA-256, so a job that re-sends every record
+after every save is cheap: the records that did not change cost one lookup and no embedding.
+Changing a title also drops the tenant's cached answers, because they name their sources;
+changing only `metadata` does not.
+
+### Ordering: `source_updated_at`
+
+Queues deliver out of order. If a `PUT` carries a `source_updated_at` **older** than the one
+stored, ragbridge ignores it and answers `200` with `"result": "stale"` and the document as
+it stands. That is not an error: the newer state is already there. Equal times are applied (it
+is nearly always a retry), and a `PUT` without `source_updated_at` is always applied and keeps
+the stored time. Send the time your application's record was last changed, **not** the time
+you make the call.
+
+### The id
+
+`external_id` is 1-255 characters from `A-Z a-z 0-9 . _ : @ -` and starts with a letter or
+digit (`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,254}$`); it is case-sensitive, and unique per tenant, so
+two applications can both have an `article:42`. Anything else is a `422` that names the
+pattern. There is no `/`: an encoded slash is decoded before ragbridge sees the path, so its
+meaning would depend on every proxy in between; use `article:42` or `wp_posts.42`. None of the
+allowed characters needs URL encoding, but encoding is harmless (`rawurlencode('article:42')` is
+`article%3A42`, which arrives as `article:42`).
+
+### Large content
+
+Content over `ASYNC_PROCESSING_THRESHOLD` bytes is saved as `pending` and embedded by the
+worker, as for uploads: the response is `202`, and you poll `GET /documents/external/{id}`
+until `status` is `ready` (or `failed`, with `error`). When it replaces an older version, **the
+old version stays searchable until the new one is ready**, and stays if the new one fails; send
+the same record again to retry a `failed` one. If you send new text while an older version is
+still queued, that older job is skipped and only the newest is stored; a job that is already
+running finishes its embedding, then discards it. If ragbridge cannot reach its queue you get `503`
+and the document is marked `failed`, so sending the record again works.
+
+### Concurrent calls
+
+Two `PUT`s for the same id at the same moment never create two documents: the database
+allows one row per tenant and id, the second call waits for the first and then decides against
+what it saved. Calls for different ids do not wait for each other. A call that keeps losing a
+race with a delete answers `409`; send it again.
+
+### Not supported yet
+
+- **Searching or filtering by `metadata`.** It is stored so you do not have to re-send everything
+  once filtering exists.
+- **Remembering deletes.** After `DELETE`, a delayed `PUT` with an older `source_updated_at`
+  creates the document again.
+- **Many records in one request**, and **files** (a PDF for a record: use `POST /documents`).
+
+Why it is built this way: [ADR 0010](adr/0010-external-document-ids.md) and the
+[plan](plans/external-ids.md).
+
 ## Multi-tenancy and API keys
 
 Every request except `GET /health` and `GET /health/ready` needs

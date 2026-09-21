@@ -2,9 +2,11 @@
 
 import asyncio
 import hashlib
+import uuid
 
 from fastapi import FastAPI
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragbridge.config import get_settings
@@ -150,3 +152,132 @@ def test_deleting_tenant_cascades_to_api_keys(app_with_database: FastAPI) -> Non
             return result.scalar_one_or_none()
 
     assert asyncio.run(create_tenant_then_delete_it()) is None
+
+
+def _document(
+    tenant_id: uuid.UUID, content: str, external_id: str | None = None, filename: str = "d.txt"
+) -> Document:
+    return Document(
+        tenant_id=tenant_id,
+        filename=filename,
+        content_type="text/plain",
+        sha256=hashlib.sha256(content.encode()).hexdigest(),
+        content=content,
+        external_id=external_id,
+    )
+
+
+async def _insert_in_fresh_sessions(
+    app: FastAPI, batches: list[list[Document]]
+) -> IntegrityError | None:
+    """Commit each batch in its own session; return the first IntegrityError, if any."""
+    session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+    for batch in batches:
+        async with session_factory() as session:
+            session.add_all(batch)
+            try:
+                await session.commit()
+            except IntegrityError as error:
+                return error
+    return None
+
+
+async def _new_tenant(app: FastAPI, name: str) -> uuid.UUID:
+    session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+    async with session_factory() as session:
+        tenant = Tenant(name=name)
+        session.add(tenant)
+        await session.commit()
+        return tenant.id
+
+
+def test_two_synced_documents_may_hold_identical_text(app_with_database: FastAPI) -> None:
+    async def run() -> IntegrityError | None:
+        tenant_id = await _new_tenant(app_with_database, "acme")
+        return await _insert_in_fresh_sessions(
+            app_with_database,
+            [
+                [_document(tenant_id, "Same boilerplate.", external_id="post:1")],
+                [_document(tenant_id, "Same boilerplate.", external_id="post:2")],
+            ],
+        )
+
+    assert asyncio.run(run()) is None
+
+
+def test_a_synced_document_and_an_upload_may_hold_identical_text(
+    app_with_database: FastAPI,
+) -> None:
+    async def run() -> IntegrityError | None:
+        tenant_id = await _new_tenant(app_with_database, "acme")
+        return await _insert_in_fresh_sessions(
+            app_with_database,
+            [
+                [_document(tenant_id, "Shared text.")],
+                [_document(tenant_id, "Shared text.", external_id="post:1")],
+            ],
+        )
+
+    assert asyncio.run(run()) is None
+
+
+def test_two_uploads_with_identical_text_still_conflict(app_with_database: FastAPI) -> None:
+    async def run() -> IntegrityError | None:
+        tenant_id = await _new_tenant(app_with_database, "acme")
+        return await _insert_in_fresh_sessions(
+            app_with_database,
+            [[_document(tenant_id, "Same bytes.")], [_document(tenant_id, "Same bytes.")]],
+        )
+
+    error = asyncio.run(run())
+
+    assert error is not None
+    assert "uq_documents_tenant_id_sha256_uploads" in str(error)
+
+
+def test_an_external_id_is_unique_within_a_tenant(app_with_database: FastAPI) -> None:
+    async def run() -> IntegrityError | None:
+        tenant_id = await _new_tenant(app_with_database, "acme")
+        return await _insert_in_fresh_sessions(
+            app_with_database,
+            [
+                [_document(tenant_id, "First.", external_id="post:1")],
+                [_document(tenant_id, "Second.", external_id="post:1")],
+            ],
+        )
+
+    error = asyncio.run(run())
+
+    assert error is not None
+    assert "uq_documents_tenant_id_external_id" in str(error)
+
+
+def test_the_same_external_id_may_exist_in_two_tenants(app_with_database: FastAPI) -> None:
+    async def run() -> IntegrityError | None:
+        first = await _new_tenant(app_with_database, "acme")
+        second = await _new_tenant(app_with_database, "globex")
+        return await _insert_in_fresh_sessions(
+            app_with_database,
+            [
+                [_document(first, "One.", external_id="post:1")],
+                [_document(second, "Two.", external_id="post:1")],
+            ],
+        )
+
+    assert asyncio.run(run()) is None
+
+
+def test_a_new_document_has_empty_metadata_and_no_external_id(app_with_database: FastAPI) -> None:
+    async def run() -> Document:
+        tenant_id = await _new_tenant(app_with_database, "acme")
+        await _insert_in_fresh_sessions(app_with_database, [[_document(tenant_id, "Plain.")]])
+        session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+        async with session_factory() as session:
+            return (await session.execute(select(Document))).scalar_one()
+
+    stored = asyncio.run(run())
+
+    assert stored.external_id is None
+    assert stored.metadata_ == {}
+    assert stored.source_updated_at is None
+    assert stored.updated_at is not None

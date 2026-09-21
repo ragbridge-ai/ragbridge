@@ -2,13 +2,16 @@
 DELETE /documents/{id}."""
 
 import asyncio
+import hashlib
 import uuid
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragbridge.config import Settings, get_settings
+from ragbridge.db.models import Document, Tenant
 from tests.helpers import build_pdf, fetch_chunks
 
 
@@ -316,3 +319,49 @@ def test_chunk_min_size_zero_keeps_every_plain_paragraph_as_its_own_chunk(
 
     assert [chunk.content for chunk in chunks][:2] == ["Handbook", "Short note."]
     assert len(chunks) == 3
+
+
+def test_a_document_response_shows_the_sync_fields_of_an_upload(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+
+    body = client.post("/documents", files={"file": ("a.txt", b"Plain.", "text/plain")}).json()
+
+    assert body["external_id"] is None
+    assert body["metadata"] == {}
+    assert body["source_updated_at"] is None
+    assert body["updated_at"] is not None
+    assert client.get(f"/documents/{body['id']}").json() == body
+
+
+def test_an_upload_is_not_answered_with_a_synced_document_holding_the_same_text(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(app_with_database, headers={"Authorization": f"Bearer {tenant_with_key}"})
+    content = b"Text that a client also syncs."
+    synced_id = asyncio.run(_insert_synced_document(app_with_database, content, "post:1"))
+
+    response = client.post("/documents", files={"file": ("a.txt", content, "text/plain")})
+
+    assert response.status_code == 201
+    assert response.json()["id"] != str(synced_id)
+    assert response.json()["external_id"] is None
+
+
+async def _insert_synced_document(app: FastAPI, content: bytes, external_id: str) -> uuid.UUID:
+    """Put a synced document into the only tenant, as the sync endpoint will."""
+    session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+    async with session_factory() as session:
+        tenant_id = (await session.execute(select(Tenant.id))).scalar_one()
+        document = Document(
+            tenant_id=tenant_id,
+            external_id=external_id,
+            filename="Synced",
+            content_type="text/plain",
+            sha256=hashlib.sha256(content).hexdigest(),
+            content=content.decode(),
+        )
+        session.add(document)
+        await session.commit()
+        return document.id
