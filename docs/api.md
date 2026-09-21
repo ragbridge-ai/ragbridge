@@ -275,8 +275,11 @@ you make the call.
 digit (`^[A-Za-z0-9][A-Za-z0-9._:@-]{0,254}$`); it is case-sensitive, and unique per tenant, so
 two applications can both have an `article:42`. A character outside that set is a `422` that names the
 pattern. There is no `/`: an encoded slash (`%2F`) is decoded before ragbridge sees the path, so
-the route does not match and the answer is a **404**, not a 422 (and an empty id is not routed
-either); its meaning would depend on every proxy in between, so use `article:42` or `wp_posts.42`. None of the
+the route does not match and the answer is a **404**, not a 422; its meaning would depend on every
+proxy in between, so use `article:42` or `wp_posts.42`. An **empty id** (`/documents/external/`) is
+redirected with a `307` to `/documents/external`, which is the document route with the id
+`external`: a client that follows redirects sees a `422` about a UUID on `GET` and `DELETE`, and a
+`405` on `PUT`. Do not send an empty id; a client should refuse it before sending. None of the
 allowed characters needs URL encoding, but encoding is harmless (`rawurlencode('article:42')` is
 `article%3A42`, which arrives as `article:42`).
 

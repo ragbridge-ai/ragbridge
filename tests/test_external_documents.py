@@ -1033,3 +1033,31 @@ def test_a_put_that_keeps_losing_a_race_with_a_delete_answers_409(
 
     assert response.status_code == 409
     assert "retry" in response.json()["detail"]
+
+
+def test_the_openapi_version_is_the_package_version(app_with_database: FastAPI) -> None:
+    from importlib.metadata import version
+
+    assert app_with_database.openapi()["info"]["version"] == version("ragbridge") != "0.1.0"
+
+
+def test_the_get_schema_documents_the_404(app_with_database: FastAPI) -> None:
+    operation = app_with_database.openapi()["paths"]["/documents/external/{external_id}"]["get"]
+
+    assert {"200", "404", "422"} <= set(operation["responses"])
+
+
+def test_an_empty_id_is_redirected_and_never_reaches_a_document(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = TestClient(
+        app_with_database,
+        headers={"Authorization": f"Bearer {tenant_with_key}"},
+        follow_redirects=False,
+    )
+
+    for method in (client.get, client.delete):
+        response = method("/documents/external/")
+        assert response.status_code == 307
+        assert response.headers["location"].endswith("/documents/external")
+    assert client.put("/documents/external/", json=RECORD).status_code == 307
