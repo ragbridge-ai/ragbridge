@@ -4,7 +4,7 @@ Date: 2026-09-21
 
 ## Status
 
-Proposed. See [docs/plans/external-ids.md](../plans/external-ids.md).
+Accepted. See [docs/plans/external-ids.md](../plans/external-ids.md).
 
 ## Context
 

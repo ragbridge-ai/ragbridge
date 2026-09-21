@@ -29,7 +29,7 @@ def _client(app: FastAPI, key: str) -> TestClient:
 async def _insert_synced_document(
     app: FastAPI, tenant_name: str, external_id: str, content: str = "Some text."
 ) -> uuid.UUID:
-    """Insert a synced document directly, until PUT exists to create one."""
+    """Insert a synced document straight into the database, bypassing the PUT endpoint."""
     session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
     async with session_factory() as session:
         tenant_id = (

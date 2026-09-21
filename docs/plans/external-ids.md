@@ -305,3 +305,33 @@ full test suite green.
 10. **`feat(documents): delete by external id`**: decision 5.
 11. **`docs: document syncing records by external id`**: `docs/api.md`, a README section
     with a Laravel-shaped example, and the limits of *Not in scope*.
+
+## Outcome
+
+Built as planned, in the steps above, with these differences found while building:
+
+- **The MCP `list_documents` tool broke when `DocumentOut` grew.** It reused that model, so
+  its output schema changed and the client failed to validate; the existing MCP tests caught
+  it. The MCP server now has its own `DocumentSummary` with the original six fields, for the
+  same reason `/search` has separate `Explainable*` models (ADR 0009).
+- **A same-text write to a document that is still `pending` or `processing` updates the title
+  and `metadata` if they differ** and reports `updated`; it is `unchanged` only when nothing
+  differs. Decision 6 said `unchanged` in both cases.
+- **The worker does not hold the row lock while it embeds.** Decision 9 said the worker locks
+  the row and checks the hash. Holding a lock for minutes would make a `PUT` of the same id
+  wait as long, so the worker embeds first and takes the lock only for the swap, where it checks
+  the hash again. A write that lands while it embeds makes it discard its work (tested).
+  `ingest_document` was split into `build_chunks` and `store_chunks` for this.
+- **If the queue is down, the document is marked `failed` and the call answers 503.** Left
+  `pending`, a client retry would be told `unchanged` and nothing would ever process it.
+- **`ON CONFLICT DO NOTHING` already waits for a row that another transaction is updating**,
+  so most concurrency tests would pass even without `SELECT ... FOR UPDATE`; that was checked by
+  removing the lock. One test now takes only the lock, and fails without it. The lock closes the
+  window before a writer's first `UPDATE`, which the ordering check depends on.
+- **Removing `ON CONFLICT` fails the concurrency tests with a unique violation, and never
+  creates a second row**: the constraint is the guarantee, as decision 8 says.
+
+**Not verified.** Nothing here ran against a real Redis and worker process, or a real embedding
+model: the tests use `FakeEmbedder`, a recording queue, and the test database. The PHP example
+in the README is syntax-checked (`php -l`) but was not run against a server or in a Laravel
+app.
