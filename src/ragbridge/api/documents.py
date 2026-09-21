@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Response, UploadFile, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.auth import get_tenant
@@ -341,3 +341,28 @@ async def put_document_by_external_id(
     return ExternalDocumentResult(
         result=outcome.result, document=DocumentOut.model_validate(outcome.document)
     )
+
+
+@router.delete("/external/{external_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document_by_external_id(
+    external_id: ExternalId,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
+    cache: Annotated[Cache, Depends(get_cache)],
+) -> None:
+    """Delete the document your application syncs under ``external_id``.
+
+    204 also when there is none: the intent is "make sure it is gone", and that
+    is true either way, so a retry of a delete that already succeeded is not an
+    error (decision 5, docs/plans/external-ids.md). Unlike ``DELETE
+    /documents/{id}`` this cannot reveal another tenant's data: the lookup is
+    scoped to the caller's tenant, and "deleted" and "never existed" look the same.
+    """
+    deleted = await session.scalar(
+        delete(Document)
+        .where(Document.tenant_id == tenant.id, Document.external_id == external_id)
+        .returning(Document.id)
+    )
+    await session.commit()
+    if deleted is not None:
+        await cache.incr(f"corpus_version:{tenant.id}")

@@ -884,3 +884,100 @@ def test_when_the_queue_is_down_the_document_is_failed_so_a_retry_works(
 
     assert again.status_code == 202
     assert len(recording.jobs) == 1
+
+
+def test_delete_by_external_id_removes_the_document_and_its_chunks(
+    app_with_database: FastAPI, tenant_with_key: str, cache: FakeCache
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    document_id = _put(client).json()["document"]["id"]
+    version_before = _corpus_version(app_with_database, cache)
+
+    response = client.delete("/documents/external/post:42")
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert client.get("/documents/external/post:42").status_code == 404
+    assert client.get(f"/documents/{document_id}").status_code == 404
+    assert _chunk_ids(app_with_database, document_id) == []
+    assert _corpus_version(app_with_database, cache) != version_before
+
+
+def test_delete_by_external_id_is_204_when_there_is_nothing_to_delete(
+    app_with_database: FastAPI, tenant_with_key: str, cache: FakeCache
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+
+    response = client.delete("/documents/external/never-existed")
+
+    assert response.status_code == 204
+    assert _corpus_version(app_with_database, cache) is None  # nothing changed, nothing to expire
+
+
+def test_deleting_twice_is_the_same_as_deleting_once(
+    app_with_database: FastAPI, tenant_with_key: str, cache: FakeCache
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)
+    assert client.delete("/documents/external/post:42").status_code == 204
+    version_after_first = _corpus_version(app_with_database, cache)
+
+    assert client.delete("/documents/external/post:42").status_code == 204
+
+    assert _corpus_version(app_with_database, cache) == version_after_first
+
+
+def test_delete_by_external_id_never_touches_another_tenants_document(
+    app_with_database: FastAPI, tenant_with_key: str, second_tenant_with_key: str
+) -> None:
+    mine = _client(app_with_database, tenant_with_key)
+    _put(mine)
+
+    theirs = _client(app_with_database, second_tenant_with_key).delete(
+        "/documents/external/post:42"
+    )
+
+    assert theirs.status_code == 204
+    assert mine.get("/documents/external/post:42").status_code == 200
+
+
+def test_delete_by_external_id_does_not_touch_uploads_or_other_ids(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    upload = client.post("/documents", files={"file": ("a.txt", b"Plain.", "text/plain")}).json()
+    _put(client, "post:1")
+    _put(client, "post:2", content="Another record.")
+
+    client.delete("/documents/external/post:1")
+
+    remaining = {document["id"] for document in _documents(client)}
+    assert upload["id"] in remaining
+    assert len(remaining) == 2
+
+
+def test_delete_by_external_id_rejects_an_invalid_id_and_needs_authentication(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    assert (
+        _client(app_with_database, tenant_with_key)
+        .delete("/documents/external/.hidden")
+        .status_code
+        == 422
+    )
+    assert TestClient(app_with_database).delete("/documents/external/post:42").status_code == 401
+
+
+def test_a_queued_job_for_a_deleted_document_does_nothing_and_the_id_can_be_reused(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client, content=NEW_TEXT)
+    client.delete("/documents/external/post:42")
+
+    _run_job(app_with_database, queue.jobs[0])  # must not raise or resurrect anything
+
+    assert client.get("/documents/external/post:42").status_code == 404
+    again = _put(client, content=NEW_TEXT)
+    assert again.status_code == 202
+    assert again.json()["result"] == "created"
