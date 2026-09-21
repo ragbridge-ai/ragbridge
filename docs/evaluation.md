@@ -445,7 +445,7 @@ What this shows, and what it does not:
 ### Chat models compared (`evaluate_qa.py`, `measure_model_speed.py`, `evaluate_agent.py`)
 
 2026-09-19, on an **Apple M1 Pro with 16 GB** (macOS 27.0, Ollama 0.34.1, Docker Desktop's VM
-capped at 3.83 GiB). These are real-world conditions, not a clean lab: Chrome, Cursor and
+capped at 3.83 GiB). These are real-world conditions, not a clean lab: a browser, an editor and
 this assistant were running, and the Mac already had 5.7-8.7 GB of swap in use throughout
 (Chrome alone held about 4 GB). Embeddings: `nomic-embed-text` in every run. The candidates
 were chosen from the Ollama library's current sizes as the largest that fit alongside

@@ -48,8 +48,8 @@ Redis password, an image running as root, no reverse proxy or TLS, a public `/do
 
 Each of these was invisible in the plan and found only by running things.
 
-- **Private files were baked into the image.** `CLAUDE.local.md` (uncommitted,
-  per-developer instructions), `.cursor`, `AGENTS.md` and `evaluation/` were copied into
+- **Private files were baked into the image.** Local, untracked editor and
+  agent configuration files (per-developer instructions) and `evaluation/` were copied into
   the runtime image; anyone who pulled it or read it on a server would have got them.
   `.dockerignore` now excludes them and any `.env.*`.
 - **`.env.prod` was committable.** `.gitignore` covered only `.env`.

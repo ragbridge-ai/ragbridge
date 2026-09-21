@@ -179,8 +179,8 @@ building it disagreed.
 **Where reality differed from the plan**
 
 - The gap table said the image carried tests and evaluation data. Tests were already in
-  `.dockerignore`; the real leak was `CLAUDE.local.md` (private, uncommitted), `.cursor`,
-  `AGENTS.md` and `evaluation/`.
+  `.dockerignore`; the real leak was local, untracked editor and agent
+  configuration files and `evaluation/`.
 - The plan put the `HEALTHCHECK` in the Dockerfile. It went in the Compose file instead:
   one image serves both the app and the worker, so an image-level check would mark the
   worker unhealthy. The worker got its own check (`arq --check`).
