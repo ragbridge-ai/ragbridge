@@ -11,9 +11,11 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     LargeBinary,
+    String,
     Text,
     UniqueConstraint,
     Uuid,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
@@ -68,16 +70,38 @@ class Document(Base):
     not globally - two tenants uploading the same file must get two
     independent documents, or the second tenant would silently receive a
     document it never uploaded (see decision 3, docs/plans/phase-3.md).
+
+    ``external_id`` is set only on documents a client application keeps in
+    sync through ``PUT /documents/external/{external_id}``; it is ``NULL``
+    for an ordinary upload. It is unique per tenant. ``sha256`` is unique
+    per tenant only among uploads (``external_id IS NULL``): two different
+    records can hold identical text, so for a synced document the hash is
+    a change detector, not an identity (decisions 1 and 2,
+    docs/plans/external-ids.md). Both constraints are named explicitly:
+    the naming convention would otherwise call them both
+    ``uq_documents_tenant_id``.
     """
 
     __tablename__ = "documents"
-    __table_args__ = (UniqueConstraint("tenant_id", "sha256"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "external_id", name="uq_documents_tenant_id_external_id"),
+        Index(
+            "uq_documents_tenant_id_sha256_uploads",
+            "tenant_id",
+            "sha256",
+            unique=True,
+            postgresql_where=text("external_id IS NULL"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     tenant_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE"), index=True
     )
+    external_id: Mapped[str | None] = mapped_column(String(255), default=None)
+    """The client application's own id for this record, or ``None`` for an upload."""
     filename: Mapped[str]
+    """The display name. For a synced document this is its ``title``."""
     content_type: Mapped[str]
     sha256: Mapped[str]
     content: Mapped[str | None] = mapped_column(Text, default=None)
@@ -96,7 +120,19 @@ class Document(Base):
     finishes ingesting them (see ragbridge.worker) - unset for a document
     processed synchronously, which never needs its raw bytes again.
     """
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    """Free-form facts the client sent with a synced document. Not searched yet."""
+    source_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+    """When the client says the record last changed, used to ignore an
+    out-of-order write (decision 7, docs/plans/external-ids.md)."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class Chunk(Base):
