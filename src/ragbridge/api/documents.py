@@ -1,13 +1,14 @@
 """Endpoints for uploading and managing documents."""
 
 import hashlib
+import json
 import uuid
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Response, UploadFile, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +20,7 @@ from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.ingestion import ingest_document, parse_pages
 from ragbridge.jobs import JobQueue, get_job_queue
+from ragbridge.sync import ExternalIdTaken, SyncPayload, SyncResult, put_external_document
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -61,6 +63,43 @@ class DocumentOut(BaseModel):
     source_updated_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+MAX_METADATA_BYTES = 16 * 1024
+
+
+class ExternalDocumentIn(BaseModel):
+    """The current state of one record in the client application."""
+
+    title: str = Field(min_length=1, max_length=500)
+    """Shown as the document's name in sources; stored as ``filename``."""
+    content: str
+    """The record's text. At least one character that is not whitespace."""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    """Free-form JSON object, at most 16 KB. Returned as sent; not searched yet."""
+    source_updated_at: AwareDatetime | None = None
+    """When the record last changed in your application, with a time zone."""
+
+    @field_validator("content")
+    @classmethod
+    def _content_must_have_text(cls, content: str) -> str:
+        if not content.strip():
+            raise ValueError("content must contain text; delete the document to empty it")
+        return content
+
+    @field_validator("metadata")
+    @classmethod
+    def _metadata_must_be_small(cls, metadata: dict[str, Any]) -> dict[str, Any]:
+        if len(json.dumps(metadata).encode()) > MAX_METADATA_BYTES:
+            raise ValueError(f"metadata must be at most {MAX_METADATA_BYTES} bytes as JSON")
+        return metadata
+
+
+class ExternalDocumentResult(BaseModel):
+    """What a ``PUT`` did, and the document as it now stands."""
+
+    result: SyncResult
+    document: DocumentOut
 
 
 @router.post("", response_model=DocumentOut)
@@ -237,3 +276,40 @@ async def _find_by_external_id(
         select(Document).where(Document.tenant_id == tenant.id, Document.external_id == external_id)
     )
     return document
+
+
+@router.put("/external/{external_id}", response_model=ExternalDocumentResult)
+async def put_document_by_external_id(
+    external_id: ExternalId,
+    body: ExternalDocumentIn,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    embedder: Annotated[Embedder, Depends(get_embedder)],
+    cache: Annotated[Cache, Depends(get_cache)],
+) -> ExternalDocumentResult:
+    """Create or replace the document your application syncs under ``external_id``.
+
+    Safe to repeat: sending the same record again changes nothing.
+    """
+    if len(body.content.encode()) > settings.max_upload_size:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="content too large"
+        )
+
+    payload = SyncPayload(body.title, body.content, body.metadata, body.source_updated_at)
+    try:
+        outcome = await put_external_document(
+            session, tenant.id, external_id, payload, settings, embedder, cache
+        )
+    except ExternalIdTaken as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="replacing is not implemented yet"
+        ) from exc
+
+    if outcome.result == "created":
+        response.status_code = status.HTTP_201_CREATED
+    return ExternalDocumentResult(
+        result=outcome.result, document=DocumentOut.model_validate(outcome.document)
+    )
