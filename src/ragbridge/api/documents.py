@@ -295,6 +295,10 @@ async def put_document_by_external_id(
     what happened: ``created`` (201), ``replaced`` (new text, re-embedded),
     ``updated`` (title or metadata only), or ``unchanged``. Text that has not
     changed is never re-chunked or re-embedded (decision 6, docs/plans/external-ids.md).
+
+    A write whose ``source_updated_at`` is older than the stored one is ignored and
+    reported as ``stale`` with status 200, not as an error: sync queues deliver out
+    of order, and the response shows the document as it stands (decision 7).
     """
     if len(body.content.encode()) > settings.max_upload_size:
         raise HTTPException(

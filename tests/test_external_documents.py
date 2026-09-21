@@ -532,3 +532,93 @@ def test_one_tenants_put_never_touches_another_tenants_document(
         _client(app_with_database, tenant_with_key).get("/documents/external/post:42").json()
         == first
     )
+
+
+def test_a_write_older_than_the_stored_one_is_ignored_and_reported(
+    app_with_database: FastAPI, tenant_with_key: str, embedder: CountingEmbedder, cache: FakeCache
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    first = _put(client).json()["document"]
+    embedded_before = list(embedder.texts)
+    version_before = _corpus_version(app_with_database, cache)
+
+    response = _put(
+        client,
+        title="Old title",
+        content="An older version of the text.",
+        metadata={"old": True},
+        source_updated_at="2026-09-21T09:59:59Z",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "stale"
+    assert response.json()["document"] == first
+    assert embedder.texts == embedded_before
+    assert _corpus_version(app_with_database, cache) == version_before
+    assert client.get("/documents/external/post:42").json() == first
+
+
+def test_stale_is_judged_by_the_instant_not_by_the_text_of_the_timestamp(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)  # stored: 10:00:00Z
+
+    older = _put(client, source_updated_at="2026-09-21T11:00:00+02:00", title="A")  # 09:00Z
+    same = _put(client, source_updated_at="2026-09-21T12:00:00+02:00", title="B")  # 10:00Z
+
+    assert older.json()["result"] == "stale"
+    assert same.json()["result"] == "updated"
+
+
+def test_a_write_with_the_same_source_time_is_applied(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)
+
+    response = _put(client, content="Same instant, new text.")
+
+    assert response.json()["result"] == "replaced"
+
+
+def test_a_newer_write_is_applied_and_its_time_stored(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)
+
+    response = _put(client, content="Newer.", source_updated_at="2026-09-21T10:00:01Z")
+
+    assert response.json()["result"] == "replaced"
+    assert response.json()["document"]["source_updated_at"] == "2026-09-21T10:00:01Z"
+
+
+def test_a_write_without_a_source_time_is_applied_and_keeps_the_stored_one(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client)
+
+    response = client.put(
+        "/documents/external/post:42", json={"title": "Retitled", "content": "Untimed text."}
+    )
+
+    assert response.json()["result"] == "replaced"
+    assert response.json()["document"]["source_updated_at"] == "2026-09-21T10:00:00Z"
+    stale = _put(
+        client, content="Older than the kept time.", source_updated_at="2026-09-20T00:00:00Z"
+    )
+    assert stale.json()["result"] == "stale"
+
+
+def test_a_stored_document_without_a_source_time_accepts_any_first_time(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    client.put("/documents/external/post:42", json={"title": "T", "content": "Untimed."})
+
+    response = _put(client, source_updated_at="2001-01-01T00:00:00Z")
+
+    assert response.json()["result"] == "replaced"
+    assert response.json()["document"]["source_updated_at"] == "2001-01-01T00:00:00Z"

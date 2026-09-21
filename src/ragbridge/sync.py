@@ -102,6 +102,9 @@ async def _apply_to_existing(
     cache: Cache,
 ) -> SyncResult:
     """Bring a locked, existing document in line with ``payload``."""
+    if _is_older_than_stored(document, payload):
+        return "stale"
+
     same_text = document.sha256 == content_hash(payload.content)
     if same_text and document.status != "failed":
         return await _update_title_and_metadata(document, payload, cache)
@@ -137,6 +140,18 @@ async def _update_title_and_metadata(
     if title_changed:
         await cache.incr(f"corpus_version:{document.tenant_id}")
     return "updated" if title_changed or metadata_changed else "unchanged"
+
+
+def _is_older_than_stored(document: Document, payload: SyncPayload) -> bool:
+    """An out-of-order write: the record changed in the client before what we hold.
+
+    Equal times are applied, since they are almost always a retry of the same
+    write. A write without a time has opted out of ordering, and is applied
+    (decision 7). This runs under the row lock, so two writes cannot both pass it
+    against the same stored value.
+    """
+    incoming, stored = payload.source_updated_at, document.source_updated_at
+    return incoming is not None and stored is not None and incoming < stored
 
 
 def _remember_source_time(document: Document, payload: SyncPayload) -> None:
