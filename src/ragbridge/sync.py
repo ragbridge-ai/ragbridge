@@ -26,6 +26,7 @@ from ragbridge.config import Settings
 from ragbridge.db.models import Chunk, Document
 from ragbridge.embeddings import Embedder
 from ragbridge.ingestion import ingest_document
+from ragbridge.jobs import JobQueue
 
 SyncResult = Literal["created", "replaced", "updated", "unchanged", "stale"]
 
@@ -46,6 +47,13 @@ class SyncOutcome:
 
     result: SyncResult
     document: Document
+    queued: bool = False
+    """True when the text was handed to the background worker: the document is
+    ``"pending"`` and the request has not embedded it."""
+
+
+class QueueUnavailable(Exception):
+    """The background queue refused the job; the document was marked ``failed``."""
 
 
 class SyncConflict(Exception):
@@ -69,57 +77,113 @@ async def put_external_document(
     settings: Settings,
     embedder: Embedder,
     cache: Cache,
+    job_queue: JobQueue,
 ) -> SyncOutcome:
     """Store the record under ``external_id`` and commit.
 
     Either this request inserts the row, or it takes a row lock on the existing
     one. Every other writer of the same id then waits behind that lock and
     decides against what this request committed (decision 8).
+
+    Text over ``ASYNC_PROCESSING_THRESHOLD`` is not embedded here: the row is
+    saved as ``"pending"`` and the worker does the rest (decision 9).
     """
+    raw = payload.content.encode()
+    in_background = len(raw) > settings.async_processing_threshold
     for _ in range(MAX_ATTEMPTS):
-        created = await _insert_if_absent(session, tenant_id, external_id, payload)
+        created = await _insert_if_absent(
+            session, tenant_id, external_id, payload, raw if in_background else None
+        )
         if created is not None:
-            await ingest_document(session, created, [payload.content], settings, embedder, cache)
-            await session.commit()
-            await session.refresh(created)
-            return SyncOutcome("created", created)
+            if not in_background:
+                await ingest_document(
+                    session, created, [payload.content], settings, embedder, cache
+                )
+            return await _finish(session, created, "created", in_background, job_queue)
 
         existing = await _lock_existing(session, tenant_id, external_id)
         if existing is not None:
-            result = await _apply_to_existing(session, existing, payload, settings, embedder, cache)
-            await session.commit()
-            await session.refresh(existing)
-            return SyncOutcome(result, existing)
+            result, queued = await _apply_to_existing(
+                session, existing, payload, raw, in_background, settings, embedder, cache
+            )
+            return await _finish(session, existing, result, queued, job_queue)
     raise SyncConflict(external_id)
+
+
+async def _finish(
+    session: AsyncSession,
+    document: Document,
+    result: SyncResult,
+    queued: bool,
+    job_queue: JobQueue,
+) -> SyncOutcome:
+    await session.commit()
+    await session.refresh(document)
+    if queued:
+        await _enqueue(session, document, job_queue)
+    return SyncOutcome(result, document, queued)
+
+
+async def _enqueue(session: AsyncSession, document: Document, job_queue: JobQueue) -> None:
+    """Hand the document to the worker.
+
+    If the queue is down, the row is marked ``failed``. Left ``"pending"``, it
+    would stay that way: a client retrying the same text would be told
+    ``unchanged`` and nothing would ever process it. ``failed`` is what makes the
+    same text be processed again (decision 6).
+    """
+    try:
+        await job_queue.enqueue_process_document(document.id, document.sha256)
+    except Exception as error:
+        document.status = "failed"
+        document.error = f"could not queue background processing: {error}"
+        await session.commit()
+        raise QueueUnavailable from error
 
 
 async def _apply_to_existing(
     session: AsyncSession,
     document: Document,
     payload: SyncPayload,
+    raw: bytes,
+    in_background: bool,
     settings: Settings,
     embedder: Embedder,
     cache: Cache,
-) -> SyncResult:
-    """Bring a locked, existing document in line with ``payload``."""
+) -> tuple[SyncResult, bool]:
+    """Bring a locked, existing document in line with ``payload``.
+
+    Returns the result and whether the text was queued for the worker.
+    """
     if _is_older_than_stored(document, payload):
-        return "stale"
+        return "stale", False
 
     same_text = document.sha256 == content_hash(payload.content)
     if same_text and document.status != "failed":
-        return await _update_title_and_metadata(document, payload, cache)
+        return await _update_title_and_metadata(document, payload, cache), False
 
-    # New text, or the same text after a failed attempt (which left no chunks):
-    # swap the chunks. Deleting and re-adding happen in one transaction, so a
-    # search sees the old version or the new one, never a mixture (decision 9).
-    await session.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    # New text, or the same text after a failed attempt (which left no chunks
+    # for it): the old chunks are replaced in one transaction, so a search sees
+    # the old version or the new one, never a mixture (decision 9).
+    title_changed = document.filename != payload.title
     document.filename = payload.title
     document.sha256 = content_hash(payload.content)
     document.metadata_ = payload.metadata
     document.error = None
     _remember_source_time(document, payload)
+    if in_background:
+        # The old chunks and text stay in place and searchable until the worker
+        # swaps them. A new title shows in sources at once, so it must not be
+        # served from a cached answer.
+        document.raw_content = raw
+        document.status = "pending"
+        if title_changed:
+            await cache.incr(f"corpus_version:{document.tenant_id}")
+        return "replaced", True
+
+    await session.execute(delete(Chunk).where(Chunk.document_id == document.id))
     await ingest_document(session, document, [payload.content], settings, embedder, cache)
-    return "replaced"
+    return "replaced", False
 
 
 async def _update_title_and_metadata(
@@ -172,7 +236,11 @@ async def _lock_existing(
 
 
 async def _insert_if_absent(
-    session: AsyncSession, tenant_id: uuid.UUID, external_id: str, payload: SyncPayload
+    session: AsyncSession,
+    tenant_id: uuid.UUID,
+    external_id: str,
+    payload: SyncPayload,
+    raw_content: bytes | None,
 ) -> Document | None:
     """Insert the row, or return ``None`` if the id already has one.
 
@@ -191,6 +259,7 @@ async def _insert_if_absent(
             sha256=content_hash(payload.content),
             metadata_=payload.metadata,
             source_updated_at=payload.source_updated_at,
+            raw_content=raw_content,
             status="pending",
         )
         .on_conflict_do_nothing(index_elements=["tenant_id", "external_id"])

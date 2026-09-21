@@ -11,6 +11,7 @@ import uuid
 from typing import NotRequired, TypedDict
 
 from arq.connections import RedisSettings
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from ragbridge.cache import Cache, RedisCache
@@ -18,7 +19,7 @@ from ragbridge.config import Settings, get_settings
 from ragbridge.db.models import Document
 from ragbridge.db.session import create_engine, create_session_factory
 from ragbridge.embeddings import Embedder, LiteLLMEmbedder
-from ragbridge.ingestion import ingest_document, parse_pages
+from ragbridge.ingestion import build_chunks, parse_pages, store_chunks
 
 
 class JobContext(TypedDict):
@@ -31,7 +32,7 @@ class JobContext(TypedDict):
     itself never needs it, and a test-built JobContext can leave it out."""
 
 
-async def process_document(ctx: JobContext, document_id: str) -> None:
+async def process_document(ctx: JobContext, document_id: str, sha256: str | None = None) -> None:
     """Parse, chunk, and embed one pending document, then mark it ready.
 
     Any failure - a corrupt PDF, non-UTF-8 text, an embedder error - is
@@ -40,33 +41,71 @@ async def process_document(ctx: JobContext, document_id: str) -> None:
     fail this job onto, since the request that created the document has
     long since returned, and arq's default retry behaviour would
     otherwise retry a permanently broken upload forever.
+
+    ``sha256`` is set for a document a client keeps in sync by external id,
+    whose text can be replaced while this job is queued or running. It names
+    the content this job was queued for: if the row's hash has moved on, a
+    newer write owns the row, and this job does nothing - at the start, before
+    the swap, and before recording a failure. Only the newest version is ever
+    embedded, so a burst of edits costs one run. The old chunks stay
+    searchable until the swap, and a failure leaves them in place (decision 9,
+    docs/plans/external-ids.md). Uploads pass no hash.
     """
     session_factory = ctx["session_factory"]
     embedder = ctx["embedder"]
     cache = ctx["cache"]
     settings = ctx["settings"]
 
+    row_id = uuid.UUID(document_id)
     async with session_factory() as session:
-        document = await session.get(Document, uuid.UUID(document_id))
-        if document is None:
+        document = await session.get(Document, row_id)
+        if document is None or _superseded(document, sha256):
             return
 
+        raw = document.raw_content
+        content_type = document.content_type
         document.status = "processing"
         await session.commit()
 
         try:
-            raw = document.raw_content
             if raw is None:
                 raise ValueError("document has no raw_content to process")
-            pages = parse_pages(raw, document.content_type, settings.pdf_extraction)
-            await ingest_document(session, document, pages, settings, embedder, cache)
-            document.raw_content = None
+            pages = parse_pages(raw, content_type, settings.pdf_extraction)
+            chunks = await build_chunks(document, pages, settings, embedder)
+            # Embedding is done; only now take the row lock, so a write to the
+            # same id is never made to wait for it.
+            locked = await _lock_current(session, row_id, sha256)
+            if locked is None:
+                return
+            await store_chunks(session, locked, pages, chunks, cache, replace=True)
+            locked.raw_content = None
         except Exception as error:  # broad on purpose: see docstring
             await session.rollback()
-            document.status = "failed"
-            document.error = str(error)
+            locked = await _lock_current(session, row_id, sha256)
+            if locked is not None:
+                locked.status = "failed"
+                locked.error = str(error)
 
         await session.commit()
+
+
+def _superseded(document: Document, sha256: str | None) -> bool:
+    return sha256 is not None and document.sha256 != sha256
+
+
+async def _lock_current(
+    session: AsyncSession, document_id: uuid.UUID, sha256: str | None
+) -> Document | None:
+    """The document, freshly read and locked - or ``None`` if gone or superseded."""
+    document: Document | None = await session.scalar(
+        select(Document)
+        .where(Document.id == document_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if document is None or _superseded(document, sha256):
+        return None
+    return document
 
 
 async def _on_startup(ctx: JobContext) -> None:

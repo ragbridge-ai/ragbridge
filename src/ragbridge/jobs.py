@@ -19,8 +19,13 @@ from ragbridge.worker import JobContext, process_document
 
 
 class JobQueue(Protocol):
-    async def enqueue_process_document(self, document_id: uuid.UUID) -> None:
-        """Schedule ``document_id`` for background processing."""
+    async def enqueue_process_document(
+        self, document_id: uuid.UUID, sha256: str | None = None
+    ) -> None:
+        """Schedule ``document_id`` for background processing.
+
+        ``sha256`` names the content the job is for; see ``process_document``.
+        """
         ...
 
 
@@ -43,9 +48,11 @@ class ArqJobQueue:
             self._redis = await create_pool(RedisSettings.from_dsn(self._redis_url))
         return self._redis
 
-    async def enqueue_process_document(self, document_id: uuid.UUID) -> None:
+    async def enqueue_process_document(
+        self, document_id: uuid.UUID, sha256: str | None = None
+    ) -> None:
         redis = await self._connection()
-        await redis.enqueue_job("process_document", str(document_id))
+        await redis.enqueue_job("process_document", str(document_id), sha256)
 
 
 class FakeJobQueue:
@@ -59,8 +66,10 @@ class FakeJobQueue:
     def __init__(self, ctx: JobContext) -> None:
         self._ctx = ctx
 
-    async def enqueue_process_document(self, document_id: uuid.UUID) -> None:
-        await process_document(self._ctx, str(document_id))
+    async def enqueue_process_document(
+        self, document_id: uuid.UUID, sha256: str | None = None
+    ) -> None:
+        await process_document(self._ctx, str(document_id), sha256)
 
 
 @lru_cache

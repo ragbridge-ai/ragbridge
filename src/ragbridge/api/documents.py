@@ -20,7 +20,13 @@ from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.ingestion import ingest_document, parse_pages
 from ragbridge.jobs import JobQueue, get_job_queue
-from ragbridge.sync import SyncConflict, SyncPayload, SyncResult, put_external_document
+from ragbridge.sync import (
+    QueueUnavailable,
+    SyncConflict,
+    SyncPayload,
+    SyncResult,
+    put_external_document,
+)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -287,6 +293,7 @@ async def put_document_by_external_id(
     tenant: Annotated[Tenant, Depends(get_tenant)],
     settings: Annotated[Settings, Depends(get_settings)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
+    job_queue: Annotated[JobQueue, Depends(get_job_queue)],
     cache: Annotated[Cache, Depends(get_cache)],
 ) -> ExternalDocumentResult:
     """Create or replace the document your application syncs under ``external_id``.
@@ -295,6 +302,12 @@ async def put_document_by_external_id(
     what happened: ``created`` (201), ``replaced`` (new text, re-embedded),
     ``updated`` (title or metadata only), or ``unchanged``. Text that has not
     changed is never re-chunked or re-embedded (decision 6, docs/plans/external-ids.md).
+
+    Content over ``ASYNC_PROCESSING_THRESHOLD`` bytes is saved as ``pending`` and
+    embedded by the background worker: the response is 202, and a client polls
+    ``GET /documents/external/{external_id}``. When it replaces an older version,
+    that version stays searchable until the new one is ready, and stays if the new
+    one fails (decision 9).
 
     A write whose ``source_updated_at`` is older than the stored one is ignored and
     reported as ``stale`` with status 200, not as an error: sync queues deliver out
@@ -308,15 +321,22 @@ async def put_document_by_external_id(
     payload = SyncPayload(body.title, body.content, body.metadata, body.source_updated_at)
     try:
         outcome = await put_external_document(
-            session, tenant.id, external_id, payload, settings, embedder, cache
+            session, tenant.id, external_id, payload, settings, embedder, cache, job_queue
         )
+    except QueueUnavailable as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="background processing is unavailable; send the record again",
+        ) from exc
     except SyncConflict as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="this id was changed by another request while writing; retry",
         ) from exc
 
-    if outcome.result == "created":
+    if outcome.queued:
+        response.status_code = status.HTTP_202_ACCEPTED
+    elif outcome.result == "created":
         response.status_code = status.HTTP_201_CREATED
     return ExternalDocumentResult(
         result=outcome.result, document=DocumentOut.model_validate(outcome.document)

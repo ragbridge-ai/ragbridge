@@ -16,6 +16,9 @@ from ragbridge.cache import FakeCache, get_cache
 from ragbridge.config import Settings, get_settings
 from ragbridge.db.models import Chunk, Document, Tenant
 from ragbridge.embeddings import FakeEmbedder, get_embedder
+from ragbridge.jobs import get_job_queue
+from ragbridge.sync import content_hash
+from ragbridge.worker import JobContext, process_document
 from tests.helpers import fetch_chunks
 
 
@@ -622,3 +625,262 @@ def test_a_stored_document_without_a_source_time_accepts_any_first_time(
 
     assert response.json()["result"] == "replaced"
     assert response.json()["document"]["source_updated_at"] == "2001-01-01T00:00:00Z"
+
+
+class RecordingQueue:
+    """A job queue that only remembers jobs, so a test decides when the worker runs."""
+
+    def __init__(self) -> None:
+        self.jobs: list[tuple[uuid.UUID, str | None]] = []
+
+    async def enqueue_process_document(
+        self, document_id: uuid.UUID, sha256: str | None = None
+    ) -> None:
+        self.jobs.append((document_id, sha256))
+
+
+class BrokenQueue:
+    async def enqueue_process_document(
+        self, document_id: uuid.UUID, sha256: str | None = None
+    ) -> None:
+        raise ConnectionError("redis is down")
+
+
+class FailingEmbedder:
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding service is down")
+
+
+LARGE_THRESHOLD = 20
+"""Bytes above which content goes to the worker in these tests."""
+
+OLD_TEXT = "Old text, small enough to embed at once."[:LARGE_THRESHOLD]
+NEW_TEXT = "The new version of this record is long enough to be queued."
+NEWER_TEXT = "An even newer version of this record, also long enough to queue."
+
+
+@pytest.fixture
+def queue(app_with_database: FastAPI) -> RecordingQueue:
+    recording = RecordingQueue()
+    app_with_database.dependency_overrides[get_job_queue] = lambda: recording
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        async_processing_threshold=LARGE_THRESHOLD
+    )
+    return recording
+
+
+def _run_job(app: FastAPI, job: tuple[uuid.UUID, str | None], embedder: Any | None = None) -> None:
+    settings = Settings(async_processing_threshold=LARGE_THRESHOLD)
+    ctx: JobContext = {
+        "session_factory": app.state.session_factory,
+        "embedder": embedder or FakeEmbedder(settings.embedding_dimension),
+        "cache": FakeCache(),
+        "settings": settings,
+    }
+    asyncio.run(process_document(ctx, str(job[0]), job[1]))
+
+
+def _stored(app: FastAPI, document_id: str) -> Document:
+    async def run() -> Document:
+        session_factory: async_sessionmaker[AsyncSession] = app.state.session_factory
+        async with session_factory() as session:
+            return (
+                await session.execute(select(Document).where(Document.id == uuid.UUID(document_id)))
+            ).scalar_one()
+
+    return asyncio.run(run())
+
+
+def _chunk_texts(app: FastAPI, document_id: str) -> list[str]:
+    chunks = asyncio.run(fetch_chunks(app.state.session_factory, uuid.UUID(document_id)))
+    return [chunk.content for chunk in chunks]
+
+
+def test_large_content_is_queued_and_answered_with_202(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+
+    response = _put(client, content=NEW_TEXT)
+
+    assert response.status_code == 202
+    assert response.json()["result"] == "created"
+    document = response.json()["document"]
+    assert document["status"] == "pending"
+    assert queue.jobs == [(uuid.UUID(document["id"]), content_hash(NEW_TEXT))]
+    assert _chunk_texts(app_with_database, document["id"]) == []
+
+    _run_job(app_with_database, queue.jobs[0])
+
+    polled = client.get("/documents/external/post:42").json()
+    assert polled["status"] == "ready"
+    assert _chunk_texts(app_with_database, document["id"]) == [NEW_TEXT]
+    assert _stored(app_with_database, document["id"]).raw_content is None
+
+
+def test_content_at_the_threshold_is_still_processed_in_the_request(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    response = _put(_client(app_with_database, tenant_with_key), content="x" * LARGE_THRESHOLD)
+
+    assert response.status_code == 201
+    assert response.json()["document"]["status"] == "ready"
+    assert queue.jobs == []
+
+
+def test_the_old_version_stays_searchable_until_the_new_one_is_ready(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    first = _put(client, content=OLD_TEXT).json()["document"]
+    assert queue.jobs == []
+
+    response = _put(client, content=NEW_TEXT)
+
+    assert response.status_code == 202
+    assert response.json()["result"] == "replaced"
+    assert response.json()["document"]["status"] == "pending"
+    assert _chunk_texts(app_with_database, first["id"]) == [OLD_TEXT]
+
+    _run_job(app_with_database, queue.jobs[0])
+
+    assert _chunk_texts(app_with_database, first["id"]) == [NEW_TEXT]
+    assert client.get("/documents/external/post:42").json()["status"] == "ready"
+
+
+def test_sending_the_same_large_text_again_does_not_queue_a_second_job(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    _put(client, content=NEW_TEXT)
+
+    response = _put(client, content=NEW_TEXT)
+
+    assert response.status_code == 200
+    assert response.json()["result"] == "unchanged"
+    assert response.json()["document"]["status"] == "pending"
+    assert len(queue.jobs) == 1
+
+
+def test_a_job_for_an_older_version_does_nothing_and_only_the_newest_is_embedded(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    document = _put(client, content=NEW_TEXT).json()["document"]
+    _put(client, content=NEWER_TEXT)
+    embedder = CountingEmbedder(get_settings().embedding_dimension)
+    assert len(queue.jobs) == 2
+
+    _run_job(app_with_database, queue.jobs[0], embedder)  # for NEW_TEXT: superseded
+    assert embedder.texts == []
+    assert _stored(app_with_database, document["id"]).status == "pending"
+
+    _run_job(app_with_database, queue.jobs[1], embedder)
+
+    assert embedder.texts == [NEWER_TEXT]
+    assert _chunk_texts(app_with_database, document["id"]) == [NEWER_TEXT]
+    assert _stored(app_with_database, document["id"]).status == "ready"
+
+
+def test_a_job_that_finds_a_newer_write_when_its_embedding_is_done_discards_its_work(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    document = _put(client, content=NEW_TEXT).json()["document"]
+
+    class WriteArrivesMidway:
+        """While the worker embeds, a newer PUT lands on the row."""
+
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            session_factory: async_sessionmaker[AsyncSession] = (
+                app_with_database.state.session_factory
+            )
+            async with session_factory() as session:
+                row = await session.get(Document, uuid.UUID(document["id"]))
+                assert row is not None
+                row.sha256 = content_hash(NEWER_TEXT)
+                row.raw_content = NEWER_TEXT.encode()
+                row.status = "pending"
+                await session.commit()
+            return await FakeEmbedder(get_settings().embedding_dimension).embed(texts)
+
+    _run_job(app_with_database, queue.jobs[0], WriteArrivesMidway())
+
+    row = _stored(app_with_database, document["id"])
+    assert row.status == "pending"  # the newer write's job is still to come
+    assert row.raw_content == NEWER_TEXT.encode()
+    assert _chunk_texts(app_with_database, document["id"]) == []
+
+
+def test_a_failed_job_keeps_the_old_version_and_the_same_text_is_retried(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    first = _put(client, content=OLD_TEXT).json()["document"]
+    _put(client, content=NEW_TEXT)
+
+    _run_job(app_with_database, queue.jobs[0], FailingEmbedder())
+
+    failed = client.get("/documents/external/post:42").json()
+    assert failed["status"] == "failed"
+    assert "embedding service is down" in failed["error"]
+    assert _chunk_texts(app_with_database, first["id"]) == [OLD_TEXT]
+
+    retry = _put(client, content=NEW_TEXT)
+
+    assert retry.status_code == 202
+    assert retry.json()["document"]["error"] is None
+    _run_job(app_with_database, queue.jobs[1])
+    assert _chunk_texts(app_with_database, first["id"]) == [NEW_TEXT]
+    assert client.get("/documents/external/post:42").json()["status"] == "ready"
+
+
+def test_a_failure_of_an_older_job_does_not_mark_a_newer_write_failed(
+    app_with_database: FastAPI, tenant_with_key: str, queue: RecordingQueue
+) -> None:
+    client = _client(app_with_database, tenant_with_key)
+    document = _put(client, content=NEW_TEXT).json()["document"]
+
+    class FailsAfterANewerWrite:
+        async def embed(self, texts: list[str]) -> list[list[float]]:
+            session_factory: async_sessionmaker[AsyncSession] = (
+                app_with_database.state.session_factory
+            )
+            async with session_factory() as session:
+                row = await session.get(Document, uuid.UUID(document["id"]))
+                assert row is not None
+                row.sha256 = content_hash(NEWER_TEXT)
+                row.status = "pending"
+                await session.commit()
+            raise RuntimeError("too late to matter")
+
+    _run_job(app_with_database, queue.jobs[0], FailsAfterANewerWrite())
+
+    row = _stored(app_with_database, document["id"])
+    assert row.status == "pending"
+    assert row.error is None
+
+
+def test_when_the_queue_is_down_the_document_is_failed_so_a_retry_works(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    app_with_database.dependency_overrides[get_settings] = lambda: Settings(
+        async_processing_threshold=LARGE_THRESHOLD
+    )
+    app_with_database.dependency_overrides[get_job_queue] = lambda: BrokenQueue()
+    client = _client(app_with_database, tenant_with_key)
+
+    down = _put(client, content=NEW_TEXT)
+
+    assert down.status_code == 503
+    stored = client.get("/documents/external/post:42").json()
+    assert stored["status"] == "failed"
+    assert "could not queue" in stored["error"]
+
+    recording = RecordingQueue()
+    app_with_database.dependency_overrides[get_job_queue] = lambda: recording
+
+    again = _put(client, content=NEW_TEXT)
+
+    assert again.status_code == 202
+    assert len(recording.jobs) == 1

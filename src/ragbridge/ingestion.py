@@ -11,6 +11,7 @@ succeeded - so it is the part safe to share unconditionally between
 both callers (see step 3, docs/plans/phase-3.md).
 """
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.cache import Cache
@@ -34,25 +35,14 @@ def parse_pages(raw: bytes, content_type: str, pdf_extraction: PdfExtraction = "
     return [raw.decode("utf-8")]
 
 
-async def ingest_document(
-    session: AsyncSession,
-    document: Document,
-    pages: list[str],
-    settings: Settings,
-    embedder: Embedder,
-    cache: Cache,
-) -> None:
-    """Chunk and embed already-parsed ``pages``, storing them against ``document``.
+async def build_chunks(
+    document: Document, pages: list[str], settings: Settings, embedder: Embedder
+) -> list[Chunk]:
+    """Chunk and embed ``pages``, returning ``Chunk`` objects for ``document``.
 
-    Sets ``document.content`` and ``document.status = "ready"`` on
-    success, and bumps ``document.tenant_id``'s corpus version - this is
-    the one place new chunks actually become searchable for both the
-    synchronous upload path and the background worker, which is what
-    makes it the right place to invalidate the tenant's answer cache
-    (decision 7, docs/plans/phase-3.md), not the moment a large upload
-    is merely *accepted* as ``"pending"``. Never called with a page list
-    that failed to parse - see the module docstring for why that split
-    matters.
+    Touches no database: embedding is the slow part, and keeping it apart from
+    storing lets the background worker do it without holding a row lock (see
+    ``store_chunks``).
     """
     is_pdf = document.content_type == "application/pdf"
     chunk_contents: list[str] = []
@@ -68,20 +58,63 @@ async def ingest_document(
             chunk_metadata.append({"page": page_number} if is_pdf else {})
 
     embeddings = await embedder.embed(chunk_contents) if chunk_contents else []
-    for index, (content, metadata, embedding) in enumerate(
-        zip(chunk_contents, chunk_metadata, embeddings, strict=True)
-    ):
-        session.add(
-            Chunk(
-                document_id=document.id,
-                tenant_id=document.tenant_id,
-                chunk_index=index,
-                content=content,
-                embedding=embedding,
-                metadata_=metadata,
-            )
+    return [
+        Chunk(
+            document_id=document.id,
+            tenant_id=document.tenant_id,
+            chunk_index=index,
+            content=content,
+            embedding=embedding,
+            metadata_=metadata,
         )
+        for index, (content, metadata, embedding) in enumerate(
+            zip(chunk_contents, chunk_metadata, embeddings, strict=True)
+        )
+    ]
 
+
+async def store_chunks(
+    session: AsyncSession,
+    document: Document,
+    pages: list[str],
+    chunks: list[Chunk],
+    cache: Cache,
+    *,
+    replace: bool = False,
+) -> None:
+    """Add ``chunks`` to ``document`` and mark it ready.
+
+    With ``replace``, the document's existing chunks are deleted first, in the
+    same transaction: a search sees the old chunks or the new ones, never a
+    mixture and never none (decision 9, docs/plans/external-ids.md).
+    """
+    if replace:
+        await session.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    session.add_all(chunks)
     document.content = "\n\n".join(pages)
     document.status = "ready"
     await cache.incr(f"corpus_version:{document.tenant_id}")
+
+
+async def ingest_document(
+    session: AsyncSession,
+    document: Document,
+    pages: list[str],
+    settings: Settings,
+    embedder: Embedder,
+    cache: Cache,
+) -> None:
+    """Chunk and embed already-parsed ``pages``, storing them against ``document``.
+
+    Sets ``document.content`` and ``document.status = "ready"`` on
+    success, and bumps ``document.tenant_id``'s corpus version - new
+    chunks become searchable in ``store_chunks``, which both the
+    synchronous paths (through here) and the background worker call, which
+    is what makes it the right place to invalidate the tenant's answer cache
+    (decision 7, docs/plans/phase-3.md), not the moment a large upload
+    is merely *accepted* as ``"pending"``. Never called with a page list
+    that failed to parse - see the module docstring for why that split
+    matters.
+    """
+    chunks = await build_chunks(document, pages, settings, embedder)
+    await store_chunks(session, document, pages, chunks, cache)
