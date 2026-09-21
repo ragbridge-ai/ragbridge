@@ -31,6 +31,7 @@ the full list and defaults. The ones that most affect answer quality and behavio
 | `ANSWER_CONTEXT_MAX_CHARS` | `6000` | Ceiling on the neighbours added to the answer context (retrieved chunks are always kept); protects a local model's small context window |
 | `REDIS_URL` | `redis://localhost:6379/0` | Queue (background jobs) and cache connection |
 | `ASYNC_PROCESSING_THRESHOLD` | `100000` | Uploads larger than this many bytes are processed by the worker |
+| `WORKER_MAX_JOBS` | `2` | How many documents one worker process embeds at once. `2` is the measured trade-off for a local Ollama (`10`, arq's own default, made 57 % of a burst of large documents fail, `2` about 4 %, `1` about 1 % but slower); raise it for a hosted embedding provider |
 | `EMBEDDING_CACHE_TTL` | `86400` | Seconds a cached embedding lives; `0` disables the embedding cache |
 | `ANSWER_CACHE_ENABLED` | `false` | Whether `POST /query` caches whole answers |
 | `ANSWER_CACHE_TTL` | `3600` | Seconds a cached answer lives, when enabled |

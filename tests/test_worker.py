@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragbridge.cache import FakeCache
-from ragbridge.config import Settings
+from ragbridge.config import Settings, get_settings
 from ragbridge.db.models import Document, Tenant
 from ragbridge.embeddings import FakeEmbedder
 from ragbridge.worker import JobContext, WorkerSettings, process_document
@@ -142,3 +142,7 @@ def test_process_document_reads_a_pdf_with_the_configured_extraction(
     row = "Mar 2022 - present Company A - Senior Engineer"
     assert row in asyncio.run(run(Settings()))
     assert row not in asyncio.run(run(Settings(pdf_extraction="plain")))
+
+
+def test_the_worker_uses_the_configured_concurrency() -> None:
+    assert WorkerSettings.max_jobs == get_settings().worker_max_jobs

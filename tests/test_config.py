@@ -116,3 +116,20 @@ def test_the_answer_model_temperature_defaults_to_zero() -> None:
 def test_a_temperature_outside_the_range_of_providers_is_refused(value: float) -> None:
     with pytest.raises(ValidationError):
         Settings(database_url=SHIPPED_URL, chat_temperature=value)
+
+
+def test_the_worker_runs_two_jobs_at_once_by_default() -> None:
+    assert Settings(database_url=SAFE_URL).worker_max_jobs == 2
+
+
+def test_the_worker_concurrency_can_be_set_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORKER_MAX_JOBS", "6")
+
+    assert Settings(database_url=SAFE_URL).worker_max_jobs == 6
+
+
+def test_the_worker_concurrency_must_be_at_least_one() -> None:
+    with pytest.raises(ValueError, match="worker_max_jobs"):
+        Settings(database_url=SAFE_URL, worker_max_jobs=0)

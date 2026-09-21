@@ -142,6 +142,7 @@ class WorkerSettings:
     on_startup = _on_startup
     on_shutdown = _on_shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().redis_url)
+    max_jobs = get_settings().worker_max_jobs
     health_check_interval = 30
     """Seconds between the worker's heartbeats, which ``arq --check`` reads.
 
