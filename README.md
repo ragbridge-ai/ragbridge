@@ -4,6 +4,8 @@ Open-source, ready-to-use RAG (Retrieval-Augmented Generation) service. It lets 
 existing application (for example a Laravel, Symfony, or WordPress app) add chat and
 smart search over its own data, through an HTTP API, without moving the application to Python.
 
+**Read more:** [Bringing RAG to PHP: Architecture, Trade-offs, and Measurements](https://amir-shadanfar.medium.com/bringing-rag-to-php-architecture-trade-offs-and-measurements-e6d4e213527f), an overview of the architecture and the main design decisions.
+
 ![The playground answering a question, with each source's retrieval detail](docs/img/playground-query.png)
 
 *The [playground](docs/playground.md): an answer, its sources, and which search found each one.*
