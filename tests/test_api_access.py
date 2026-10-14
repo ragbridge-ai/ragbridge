@@ -166,3 +166,38 @@ def test_the_same_groups_in_another_order_share_a_cached_answer(
     assert second.json() == first.json()
     assert duplicated.json() == first.json()
     assert second.json()["answer"] != "recomputed"
+
+
+def test_the_context_around_an_answer_is_limited_to_the_groups_too(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    """A document's chunks normally share its groups, so the chunk next to a visible one is
+    visible too and a missing filter on the neighbours cannot be seen. Here the middle chunk
+    carries another group, by hand, so that it can.
+    """
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+
+    async def seed() -> None:
+        tenant_id = await tenant_id_for_key(session_factory, tenant_with_key)
+        async with session_factory() as session:
+            await add_document(
+                session,
+                tenant_id,
+                "mixed",
+                ["alpha public one", "secret hr middle", "alpha public three"],
+                ["public"],
+                chunk_groups=[["public"], ["hr"], ["public"]],
+            )
+            await session.commit()
+
+    asyncio.run(seed())
+    client = _client(app_with_database, tenant_with_key)
+
+    scoped = client.post("/query", json={"question": "alpha", "access_groups": ["public"]})
+    unscoped = client.post("/query", json={"question": "alpha"})
+
+    assert {source["snippet"] for source in scoped.json()["sources"]} == {
+        "alpha public one",
+        "alpha public three",
+    }
+    assert "secret hr middle" in {source["snippet"] for source in unscoped.json()["sources"]}
