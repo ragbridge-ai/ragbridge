@@ -49,7 +49,7 @@ curl -X POST http://localhost:8000/query \
 
 | Endpoint | What it does |
 |---|---|
-| `POST /documents`, `GET /documents`, `DELETE /documents/{id}` | Upload, list and delete documents |
+| `POST /documents`, `GET /documents`, `PATCH /documents/{id}`, `DELETE /documents/{id}` | Upload, list, relabel and delete documents |
 | `PUT`, `GET`, `DELETE /documents/external/{your_id}` | Keep a document in sync with a record of your application |
 | `POST /query` | An answer, with its sources |
 | `POST /search` | The best-matching chunks, without an answer |
@@ -61,6 +61,10 @@ then neighbouring chunks marked `"context_only": true` (given as surrounding tex
 scored by retrieval, score `0.0`).
 
 Add `"explain": true` to `/query` or `/search` to see which search found each chunk.
+
+Label documents with **access groups** and pass `"access_groups": [...]` to `/query`,
+`/search` or `/agent`, and a request only finds documents that share one of its groups:
+a public help centre and an intranet can share one tenant.
 Details and examples: [API guide](docs/api.md).
 
 ## Keeping it in sync with your application
