@@ -91,6 +91,16 @@ development tool, not a product surface: the API stays the product, and the page
 manages tenants or keys. This reverses Phase 5's "no web UI", see the plan's reasoning.
 See the detailed plan: [docs/plans/phase-6-ui.md](docs/plans/phase-6-ui.md).
 
+### Phase 7 — Access control and conversation support
+Core support for a chat product built in a separate repository, `ragbridge-ai/ragbridge-chat`
+(a chat gateway and an embeddable widget), which calls the core over HTTP only. Access groups
+on documents, enforced in retrieval and in the answer cache; API keys that must send an
+access scope; an optional `history` field with a `Rewriter` that turns follow-up questions
+into standalone ones for retrieval; and an `answerable` flag that skips generation when
+retrieval finds nothing strong enough. All of it is additive and opt-in: existing callers see
+no change.
+See the detailed plan: [docs/plans/chat-roadmap.md](docs/plans/chat-roadmap.md).
+
 ### After v1
 GraphRAG with Neo4j, Qdrant adapter behind the same interface as pgvector, direct MySQL
 sync, and Terraform for a cloud provider (deferred from Phase 5: it cannot be applied,
