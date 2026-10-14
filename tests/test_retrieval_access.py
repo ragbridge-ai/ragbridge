@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from ragbridge.config import get_settings
-from ragbridge.db.models import Chunk, Document, Tenant
+from ragbridge.db.models import Chunk
 from ragbridge.embeddings import FakeEmbedder
 from ragbridge.retrieval import (
     fetch_neighbours,
@@ -25,67 +25,21 @@ from ragbridge.retrieval import (
     keyword_search,
     vector_search,
 )
+from tests.helpers import add_document, new_tenant
 
 Arm = Literal["vector", "keyword", "keyword_or_fallback", "hybrid"]
 
 
-async def _add_document(
-    session: AsyncSession,
-    tenant_id: uuid.UUID,
-    name: str,
-    texts: list[str],
-    groups: list[str],
-    *,
-    chunk_groups: list[list[str]] | None = None,
-) -> Document:
-    """A document and its chunks, written straight to the database.
-
-    ``chunk_groups`` overrides the groups of each chunk, to build a document whose chunks
-    disagree with their document (the filter is on the chunks, so it must hold then too).
-    """
-    document = Document(
-        tenant_id=tenant_id,
-        filename=name,
-        content_type="text/plain",
-        sha256=name,
-        access_groups=groups,
-        status="ready",
-    )
-    session.add(document)
-    await session.flush()
-    embeddings = await FakeEmbedder(get_settings().embedding_dimension).embed(texts)
-    session.add_all(
-        Chunk(
-            document_id=document.id,
-            tenant_id=tenant_id,
-            chunk_index=index,
-            content=text,
-            embedding=embedding,
-            access_groups=chunk_groups[index] if chunk_groups else groups,
-        )
-        for index, (text, embedding) in enumerate(zip(texts, embeddings, strict=True))
-    )
-    await session.flush()
-    return document
-
-
-async def _new_tenant(session: AsyncSession) -> uuid.UUID:
-    tenant = Tenant(name="acme")
-    session.add(tenant)
-    await session.flush()
-    return tenant.id
-
-
 async def _seed_policies(session: AsyncSession) -> uuid.UUID:
-    tenant_id = await _new_tenant(session)
-    await _add_document(
+    tenant_id = await new_tenant(session)
+    await add_document(
         session, tenant_id, "public", ["The refund policy for visitors."], ["public"]
     )
-    await _add_document(session, tenant_id, "hr", ["The salary policy for staff."], ["hr"])
-    await _add_document(
+    await add_document(session, tenant_id, "hr", ["The salary policy for staff."], ["hr"])
+    await add_document(
         session, tenant_id, "both", ["The leave policy for everyone."], ["hr", "public"]
     )
-    await _add_document(session, tenant_id, "nobody", ["The draft policy, not shared."], [])
+    await add_document(session, tenant_id, "nobody", ["The draft policy, not shared."], [])
     await session.commit()
     return tenant_id
 
@@ -173,8 +127,8 @@ def test_neighbours_are_limited_to_the_groups_even_when_they_differ_from_the_chu
 
     async def neighbours(groups: list[str] | None) -> set[int]:
         async with session_factory() as session:
-            tenant_id = await _new_tenant(session)
-            document = await _add_document(
+            tenant_id = await new_tenant(session)
+            document = await add_document(
                 session,
                 tenant_id,
                 "doc",
@@ -209,15 +163,15 @@ async def _seed_hidden_common_word(session: AsyncSession) -> uuid.UUID:
     Counted over the whole tenant, "zebra" is in two thirds of the chunks and is dropped
     from a query as too common. Counted over the ``public`` chunks it is in one in twenty.
     """
-    tenant_id = await _new_tenant(session)
-    await _add_document(
+    tenant_id = await new_tenant(session)
+    await add_document(
         session,
         tenant_id,
         "hidden",
         [f"zebra note {index}" for index in range(HIDDEN_ZEBRA_CHUNKS)],
         ["hr"],
     )
-    await _add_document(
+    await add_document(
         session,
         tenant_id,
         "visible",

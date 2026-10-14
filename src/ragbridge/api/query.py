@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge import tracing
+from ragbridge.access import AccessGroups, normalise_scope
 from ragbridge.api.explain import RetrievalInfo, build_retrieval_info
 from ragbridge.auth import get_tenant
 from ragbridge.cache import Cache, get_cache
@@ -33,6 +34,10 @@ class QueryRequest(BaseModel):
     """Which retrieval arm(s) to use. Defaults to settings.retrieval_mode."""
     explain: bool = False
     """Add a ``retrieval`` object to each source: which arm found it, and where."""
+    access_groups: AccessGroups | None = None
+    """Only use chunks of documents sharing at least one of these groups, for retrieval and
+    for the surrounding context. Missing: use everything. An empty list: a caller with no
+    groups, who gets no sources."""
 
 
 class Source(BaseModel):
@@ -84,6 +89,17 @@ def _settings_fingerprint(settings: Settings) -> str:
     return hashlib.sha256(settings.model_dump_json().encode()).hexdigest()[:16]
 
 
+def _scope_key(access_groups: list[str] | None) -> str:
+    """The access scope as it enters the answer-cache key.
+
+    Without it, an answer built from one group's documents could be served to a caller in
+    another. ``*`` is no scope at all and an empty string is a scope of no groups: a group
+    name cannot be either, so no scope can be mistaken for another. The groups arrive
+    sorted (``normalise_scope``), so the same set in another order shares an entry.
+    """
+    return "*" if access_groups is None else ",".join(access_groups)
+
+
 @router.post("/query", response_model=ExplainableQueryResponse, response_model_exclude_unset=True)
 async def answer_query(
     request: QueryRequest,
@@ -126,12 +142,13 @@ async def answer_query(
     found it (see ``ragbridge.api.search`` for why those fields are unset,
     not ``None``, otherwise).
     """
+    access_groups = normalise_scope(request.access_groups)
     cache_key: str | None = None
     if settings.answer_cache_enabled:
         corpus_version = await cache.get(f"corpus_version:{tenant.id}") or "0"
         request_digest = hashlib.sha256(
             f"{_settings_fingerprint(settings)}|{request.question}|{request.mode}|"
-            f"{request.top_k}|{request.explain}".encode()
+            f"{request.top_k}|{request.explain}|{_scope_key(access_groups)}".encode()
         ).hexdigest()
         cache_key = f"answer:{tenant.id}:{corpus_version}:{request_digest}"
         cached = await cache.get(cache_key)
@@ -152,13 +169,18 @@ async def answer_query(
             max_term_share=settings.keyword_max_term_frequency,
             rarity_weighting=settings.keyword_rarity_weighting,
             tenant_id=tenant.id,
+            access_groups=access_groups,
         )
         rows = await reranker.rerank(request.question, candidates, request.top_k)
 
         shown = rows
         if settings.answer_context_neighbours > 0:
             neighbours = await fetch_neighbours(
-                session, rows, distance=settings.answer_context_neighbours, tenant_id=tenant.id
+                session,
+                rows,
+                distance=settings.answer_context_neighbours,
+                tenant_id=tenant.id,
+                access_groups=access_groups,
             )
             shown = add_neighbours(
                 rows,

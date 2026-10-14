@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ragbridge.access import AccessGroups, normalise_scope
 from ragbridge.api.explain import RetrievalInfo, build_retrieval_info
 from ragbridge.auth import get_tenant
 from ragbridge.config import Settings, get_settings
@@ -26,6 +27,9 @@ class SearchRequest(BaseModel):
     """Which retrieval arm(s) to use. Defaults to settings.retrieval_mode."""
     explain: bool = False
     """Add a ``retrieval`` object to each hit, and ``candidate_count`` to the response."""
+    access_groups: AccessGroups | None = None
+    """Only search chunks of documents sharing at least one of these groups. Missing: search
+    everything. An empty list: a caller with no groups, who finds nothing."""
 
 
 class _HitFields(BaseModel):
@@ -98,6 +102,7 @@ async def search_documents(
         max_term_share=settings.keyword_max_term_frequency,
         rarity_weighting=settings.keyword_rarity_weighting,
         tenant_id=tenant.id,
+        access_groups=normalise_scope(request.access_groups),
     )
     rows = await reranker.rerank(request.query, candidates, request.top_k)
     hits = [

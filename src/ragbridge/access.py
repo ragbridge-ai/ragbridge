@@ -26,6 +26,16 @@ AccessGroups = Annotated[list[AccessGroup], Field(max_length=MAX_GROUPS)]
 """A request's or a document's list of groups, as the API accepts it."""
 
 
+def normalise_scope(groups: Iterable[str] | None) -> list[str] | None:
+    """A request's ``access_groups`` as retrieval takes them.
+
+    ``None`` stays ``None``: the caller sent no groups and is not limited. An empty list
+    stays an empty list: a caller with no groups, who sees nothing. The two are different
+    requests and must never be mixed up, in retrieval or in the answer cache.
+    """
+    return None if groups is None else normalise_groups(groups)
+
+
 def normalise_groups(groups: Iterable[str]) -> list[str]:
     """``groups`` without duplicates, sorted.
 
