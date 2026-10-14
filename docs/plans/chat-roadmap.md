@@ -297,3 +297,141 @@ The core's phases are numbered; the letter phases below belong to the other repo
 cannot separate their documents; a minor core release follows 7.2. 7.3 and 7.4 move after the
 widget, so their effect can be seen in the browser, not only in numbers. S1 is in the core,
 S2 and S3 in `ragbridge-chat`. Phase G starts only once the system is declared stable.
+
+## Step 7.1 detail — access groups on documents
+
+Branch: `feat/phase-7-1-access-groups` (created from `main`, off the merged roadmap).
+This step labels documents with access groups and makes every read of chunks honour them.
+It does **not** make any key require a scope: a request without `access_groups` sees
+everything, exactly as today. That is step 7.2. Nothing changes for an existing caller.
+
+**Decided after reading the code** (each one a gap the plan above did not settle):
+
+1. **A re-upload of identical bytes with different groups is a `409`.** `POST /documents`
+   returns the existing document when the same file is uploaded again
+   (`api/documents.py`, the `sha256` check), and would silently drop the new groups. A
+   re-upload that sends no `access_groups`, or the same set, keeps today's `200`. The
+   `409` says to use `PATCH`.
+2. **`PUT /documents/external/{id}` without `access_groups` keeps the stored groups**
+   (`{}` for a new document); a list, even an empty one, replaces them. `PUT` is a
+   full-state write for text, title and metadata, but a client that does not know the
+   field, or a metadata-only sync, must not hide a document by wiping its groups. A change
+   of groups alone reports `result: "updated"`.
+3. **`access_groups` missing and `access_groups: []` are different requests.** Missing:
+   no filter (a server-side caller, as today). Empty: a caller with no groups, which
+   matches no document. The two hash to different answer-cache keys.
+4. **The keyword arm's word statistics are scoped too.** `_term_stats` counts how many
+   chunks contain each query word, to drop common words (`KEYWORD_MAX_TERM_FREQUENCY`) and
+   to weight rare ones (`KEYWORD_RARITY_WEIGHTING`). Counted over the whole tenant, chunks
+   the caller cannot see would shape its ranking. So five reads of `chunks` filter by
+   group, not four: the vector arm, both keyword queries, the statistics, and the
+   neighbours.
+5. **Chunks take their groups at the moment they are stored, from the locked row.** The
+   background worker embeds before it takes the row lock (`worker.py`), so groups copied
+   in `build_chunks` could be a `PATCH` out of date by the time the chunks are swapped in.
+   `store_chunks` runs under the lock and sets them from the document as it is then.
+6. **Group names are validated like external ids:** `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`,
+   at most 32 per document or request, stored de-duplicated and sorted. A change means a
+   different set, not a different order.
+7. **`chunks.access_groups` gets a GIN index too**, not only `documents`: every filter is
+   on `chunks`, never through the join. Whether the planner uses it is measured, not
+   assumed, and reported in the Outcome.
+
+### Data model changes
+
+- `documents.access_groups`: `text[]`, not null, server default `'{}'`, GIN index.
+- `chunks.access_groups`: the same, a copy of its document's, GIN index.
+- One migration, after `5e2b7c1d9a34`. Existing rows get `{}`: no end user sees them
+  (decision 2), and plain keys see them as before. No backfill is needed, because every
+  existing document's groups are `{}` too.
+
+### API changes
+
+Additive. No existing field changes, and no default response shape changes except one new
+field on documents.
+
+| Endpoint | Change |
+|---|---|
+| `POST /search`, `POST /query`, `POST /agent` | Optional `access_groups: list[str]`. Missing: no filter. |
+| `POST /documents` | Optional repeated form field `access_groups`. `409` for a re-upload with a different set. |
+| `PUT /documents/external/{external_id}` | Optional `access_groups` in the body; missing keeps the stored set. |
+| `PATCH /documents/{id}` | New. Body `{"access_groups": [...]}`, required. `404` for another tenant's id. |
+| Every response with a `DocumentOut` | Gains `access_groups`. |
+| MCP tools, `RagbridgeClient` | None (step 7.1 above). |
+
+No new settings.
+
+### Proposed commit breakdown
+
+1. **`docs: add Phase 7 step 1 plan`** (this section).
+2. **`feat(db): add access_groups to documents and chunks`**
+   - The two columns and their GIN indexes on the models, and the migration.
+   - `store_chunks` sets each chunk's groups from the document it was handed, which on
+     the worker path is the locked row (point 5). `build_chunks` does not set them.
+   - Nothing reads the columns yet, and they are `{}` everywhere, so every existing test
+     passes unchanged.
+   - Tests: the migration creates both columns and both indexes; a document and a chunk
+     round-trip their groups; the worker stores the groups the row holds when it takes
+     the lock, not the ones it had when embedding started (a fake embedder changes the
+     row's groups mid-embedding).
+3. **`feat(retrieval): filter retrieval by access groups`**
+   - New `src/ragbridge/access.py`: the validated group-name type and
+     `normalise_groups` (point 6), shared by retrieval, the endpoints and the document
+     writes.
+   - `access_groups: Sequence[str] | None = None` on `vector_search`, `keyword_search`
+     (and through it the two keyword queries and `_term_stats`),
+     `hybrid_search_with_provenance`, `hybrid_search` and `fetch_neighbours`. `None` adds
+     no condition; a list adds `chunks.access_groups && :groups`, so an empty list
+     matches nothing.
+   - Tests: each of the five reads returns only overlapping chunks, returns everything
+     for `None` and nothing for `[]`; neighbours are filtered even when their own groups
+     differ from the retrieved chunk's (set by hand, since a real document's chunks
+     share one set - the filter is a second layer); a word that is common only in a
+     hidden group is not dropped from a visible caller's query. **The existing retrieval
+     tests are not edited**: that is the proof the default is unchanged.
+4. **`feat(api): accept access_groups on /search, /query and /agent`**
+   - The request field, validated (point 6), passed to retrieval and, for `/query`, to
+     the neighbours.
+   - The answer-cache digest gains the normalised groups, with a distinct marker for a
+     missing field (point 3).
+   - Tests: each endpoint honours the field; `422` for an invalid name or more than 32;
+     `["hr","it"]` and `["it","hr"]` share a cache entry; an answer cached for `["hr"]`
+     is not served to `["public"]`, nor the reverse; missing and `[]` are not served each
+     other's answers.
+5. **`feat(api): set access groups when writing documents`**
+   - `DocumentOut.access_groups`.
+   - `POST /documents`: the form field, and the `409` of point 1.
+   - `PATCH /documents/{id}`: locks the row, writes the document's and its chunks' groups
+     in one transaction, and bumps the corpus version only when the set changed.
+   - `PUT /documents/external/{id}`: point 2. A change of groups is written to the
+     existing chunks at once, also while new text is `pending` (decision 4), through the
+     same function `PATCH` uses.
+   - Tests: upload with groups stores them on the document and every chunk; the `409`
+     and both `200` cases of point 1; `PATCH` changes chunks too, `404` across tenants,
+     no cache bump for the same set in another order; `PUT` keeps groups when the field
+     is missing, replaces them when sent, reports `updated` for a groups-only change; a
+     groups change during a pending replace reaches the old chunks immediately.
+6. **`test: add an access-group isolation matrix`**
+   - New `tests/test_access_isolation.py`, the counterpart of
+     `test_tenant_isolation.py`. One tenant, documents labelled `public`, `hr`,
+     `engineering`, both, and none. For each scope (`["public"]`, `["hr"]`,
+     `["engineering"]`, `["hr","engineering"]`, `[]`, missing) it walks `/search`,
+     `/query` (with the answer cache off and on, neighbours on) and `/agent`, and asserts
+     that every returned document shares a group with the scope; that missing sees all;
+     that `[]` sees none; and that the unlabelled document is never seen with any list.
+     Plus one sequence test: cache an answer for `["hr"]`, `PATCH` the document out of
+     `hr`, ask again, and get no source from it.
+   - Each protection is mutation-checked once by hand (remove the filter, see the matrix
+     fail), and the Outcome says which ones were.
+7. **`docs: document access groups`**
+   - README and `docs/api.md`: how to label a document, how a caller scopes a request,
+     and that a document with no groups is invisible to every scoped request.
+
+Measured in this step, and reported in the Outcome with real numbers: whether the planner
+uses the `chunks` GIN index in each arm (`EXPLAIN ANALYZE` on a generated tenant), and
+whether a small group in a large tenant still gets its full candidate count under
+`hnsw.iterative_scan` (the `max_scan_tuples` limit named under *Data model changes
+(core)*).
+
+Not in this step: `requires_access_scope` and every `403` (7.2), MCP, and the PHP client
+(P1).
