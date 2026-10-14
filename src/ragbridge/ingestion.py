@@ -11,7 +11,9 @@ succeeded - so it is the part safe to share unconditionally between
 both callers (see step 3, docs/plans/phase-3.md).
 """
 
-from sqlalchemy import delete
+import uuid
+
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.cache import Cache
@@ -101,6 +103,34 @@ async def store_chunks(
     document.content = "\n\n".join(pages)
     document.status = "ready"
     await cache.incr(f"corpus_version:{document.tenant_id}")
+
+
+async def set_access_groups(session: AsyncSession, document: Document, groups: list[str]) -> bool:
+    """Give ``document`` and its chunks ``groups``; ``True`` when that changed anything.
+
+    ``groups`` must be normalised (``ragbridge.access.normalise_groups``): the same set in
+    another order is not a change. The chunks are written at once, including those of a
+    document whose new text is still ``"pending"`` - they stay searchable until the worker
+    swaps them, and must not keep the old groups meanwhile.
+
+    The caller holds the document's row lock, commits, and *then* bumps the tenant's corpus
+    version when this returned ``True`` (``bump_corpus_version``), so no cached answer built
+    under the old groups is served again (decision 4, docs/plans/chat-roadmap.md). The order
+    matters: bumped before the commit, a query arriving in between would read the new
+    version, still read the old groups, and cache a stale answer under the new version.
+    """
+    if document.access_groups == groups:
+        return False
+    document.access_groups = groups
+    await session.execute(
+        update(Chunk).where(Chunk.document_id == document.id).values(access_groups=groups)
+    )
+    return True
+
+
+async def bump_corpus_version(cache: Cache, tenant_id: uuid.UUID) -> None:
+    """Make every cached answer of ``tenant_id`` unreachable (decision 7, docs/plans/phase-3.md)."""
+    await cache.incr(f"corpus_version:{tenant_id}")
 
 
 async def ingest_document(

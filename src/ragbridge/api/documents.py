@@ -7,18 +7,24 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Response, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Path, Response, UploadFile, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ragbridge.access import AccessGroups, normalise_groups
 from ragbridge.auth import get_tenant
 from ragbridge.cache import Cache, get_cache
 from ragbridge.config import Settings, get_settings
 from ragbridge.db.models import Document, Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
-from ragbridge.ingestion import ingest_document, parse_pages
+from ragbridge.ingestion import (
+    bump_corpus_version,
+    ingest_document,
+    parse_pages,
+    set_access_groups,
+)
 from ragbridge.jobs import JobQueue, get_job_queue
 from ragbridge.sync import (
     QueueUnavailable,
@@ -67,6 +73,9 @@ class DocumentOut(BaseModel):
     # The column is ``metadata_`` because ``metadata`` is SQLAlchemy's own attribute.
     metadata: dict[str, Any] = Field(validation_alias="metadata_")
     source_updated_at: datetime | None
+    access_groups: list[str]
+    """Who may see this document: a request scoped to none of these groups does not find
+    it. Empty means no scoped request does."""
     created_at: datetime
     updated_at: datetime
 
@@ -85,6 +94,9 @@ class ExternalDocumentIn(BaseModel):
     """Free-form JSON object, at most 16 KB. Returned as sent; not searched yet."""
     source_updated_at: AwareDatetime | None = None
     """When the record last changed in your application, with a time zone."""
+    access_groups: AccessGroups | None = None
+    """Who may see the record. Missing keeps the groups it already has (none, for a new
+    record); a list, even an empty one, replaces them."""
 
     @field_validator("content")
     @classmethod
@@ -118,8 +130,13 @@ async def upload_document(
     embedder: Annotated[Embedder, Depends(get_embedder)],
     job_queue: Annotated[JobQueue, Depends(get_job_queue)],
     cache: Annotated[Cache, Depends(get_cache)],
+    access_groups: Annotated[AccessGroups | None, Form()] = None,
 ) -> Document:
     """Upload a text, Markdown, or PDF document.
+
+    ``access_groups`` (a repeated form field) says who may see it. Uploading the same file
+    again with different groups is a 409 rather than a silent keep of the old ones: use
+    ``PATCH /documents/{id}``.
 
     Uploads over ``settings.async_processing_threshold`` are stored with
     ``status = "pending"`` and handed to the background worker instead
@@ -163,7 +180,14 @@ async def upload_document(
             Document.external_id.is_(None),
         )
     )
+    groups = [] if access_groups is None else normalise_groups(access_groups)
     if existing is not None:
+        if access_groups is not None and groups != existing.access_groups:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="this file is already uploaded with other access groups; "
+                "use PATCH /documents/{id} to change them",
+            )
         response.status_code = status.HTTP_200_OK
         return existing
 
@@ -175,6 +199,7 @@ async def upload_document(
             sha256=sha256,
             raw_content=raw,
             status="pending",
+            access_groups=groups,
         )
         session.add(document)
         await session.commit()
@@ -199,6 +224,7 @@ async def upload_document(
         filename=filename,
         content_type=content_type,
         sha256=sha256,
+        access_groups=groups,
     )
     session.add(document)
     await session.flush()
@@ -235,6 +261,42 @@ async def get_document(
     )
     if document is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+    return document
+
+
+class AccessGroupsPatch(BaseModel):
+    access_groups: AccessGroups
+    """The document's new groups, replacing the old ones. An empty list hides it from every
+    scoped request."""
+
+
+@router.patch("/{document_id}", response_model=DocumentOut)
+async def set_document_access_groups(
+    document_id: uuid.UUID,
+    body: AccessGroupsPatch,
+    session: Annotated[AsyncSession, Depends(get_session)],
+    tenant: Annotated[Tenant, Depends(get_tenant)],
+    cache: Annotated[Cache, Depends(get_cache)],
+) -> Document:
+    """Change who may see a document, without touching its text.
+
+    Its chunks change in the same transaction, so a search sees the old groups or the new
+    ones, never a mixture. 404, not 403, for another tenant's document, as for ``DELETE``.
+    Sending the groups it already has changes nothing, whatever their order.
+    """
+    document = await session.scalar(
+        select(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant.id)
+        .with_for_update()
+    )
+    if document is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="document not found")
+
+    changed = await set_access_groups(session, document, normalise_groups(body.access_groups))
+    await session.commit()
+    if changed:
+        await bump_corpus_version(cache, tenant.id)
+    await session.refresh(document)
     return document
 
 
@@ -348,7 +410,13 @@ async def put_document_by_external_id(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE, detail="content too large"
         )
 
-    payload = SyncPayload(body.title, body.content, body.metadata, body.source_updated_at)
+    payload = SyncPayload(
+        body.title,
+        body.content,
+        body.metadata,
+        body.source_updated_at,
+        None if body.access_groups is None else normalise_groups(body.access_groups),
+    )
     try:
         outcome = await put_external_document(
             session, tenant.id, external_id, payload, settings, embedder, cache, job_queue

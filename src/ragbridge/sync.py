@@ -25,7 +25,7 @@ from ragbridge.cache import Cache
 from ragbridge.config import Settings
 from ragbridge.db.models import Chunk, Document
 from ragbridge.embeddings import Embedder
-from ragbridge.ingestion import ingest_document
+from ragbridge.ingestion import bump_corpus_version, ingest_document, set_access_groups
 from ragbridge.jobs import JobQueue
 
 SyncResult = Literal["created", "replaced", "updated", "unchanged", "stale"]
@@ -39,6 +39,9 @@ class SyncPayload:
     content: str
     metadata: dict[str, Any]
     source_updated_at: datetime | None
+    access_groups: list[str] | None = None
+    """Normalised. ``None`` keeps the stored groups; a list, even an empty one, replaces
+    them (docs/plans/chat-roadmap.md, step 7.1)."""
 
 
 @dataclass(frozen=True)
@@ -99,14 +102,16 @@ async def put_external_document(
                 await ingest_document(
                     session, created, [payload.content], settings, embedder, cache
                 )
-            return await _finish(session, created, "created", in_background, job_queue)
+            return await _finish(session, created, "created", in_background, job_queue, cache)
 
         existing = await _lock_existing(session, tenant_id, external_id)
         if existing is not None:
-            result, queued = await _apply_to_existing(
+            result, queued, groups_changed = await _apply_to_existing(
                 session, existing, payload, raw, in_background, settings, embedder, cache
             )
-            return await _finish(session, existing, result, queued, job_queue)
+            return await _finish(
+                session, existing, result, queued, job_queue, cache, groups_changed
+            )
     raise SyncConflict(external_id)
 
 
@@ -116,8 +121,13 @@ async def _finish(
     result: SyncResult,
     queued: bool,
     job_queue: JobQueue,
+    cache: Cache,
+    groups_changed: bool = False,
 ) -> SyncOutcome:
     await session.commit()
+    if groups_changed:
+        # After the commit, never before: see ``set_access_groups``.
+        await bump_corpus_version(cache, document.tenant_id)
     await session.refresh(document)
     if queued:
         await _enqueue(session, document, job_queue)
@@ -150,17 +160,23 @@ async def _apply_to_existing(
     settings: Settings,
     embedder: Embedder,
     cache: Cache,
-) -> tuple[SyncResult, bool]:
+) -> tuple[SyncResult, bool, bool]:
     """Bring a locked, existing document in line with ``payload``.
 
-    Returns the result and whether the text was queued for the worker.
+    Returns the result, whether the text was queued for the worker, and whether the access
+    groups changed - which the caller must follow with a corpus-version bump *after* it
+    commits.
     """
     if _is_older_than_stored(document, payload):
-        return "stale", False
+        return "stale", False, False
 
+    groups_changed = payload.access_groups is not None and await set_access_groups(
+        session, document, payload.access_groups
+    )
     same_text = document.sha256 == content_hash(payload.content)
     if same_text and document.status != "failed":
-        return await _update_title_and_metadata(document, payload, cache), False
+        result = await _update_title_and_metadata(document, payload, cache, groups_changed)
+        return result, False, groups_changed
 
     # New text, or the same text after a failed attempt (which left no chunks
     # for it): the old chunks are replaced in one transaction, so a search sees
@@ -179,20 +195,21 @@ async def _apply_to_existing(
         document.status = "pending"
         if title_changed:
             await cache.incr(f"corpus_version:{document.tenant_id}")
-        return "replaced", True
+        return "replaced", True, groups_changed
 
     await session.execute(delete(Chunk).where(Chunk.document_id == document.id))
     await ingest_document(session, document, [payload.content], settings, embedder, cache)
-    return "replaced", False
+    return "replaced", False, groups_changed
 
 
 async def _update_title_and_metadata(
-    document: Document, payload: SyncPayload, cache: Cache
+    document: Document, payload: SyncPayload, cache: Cache, groups_changed: bool
 ) -> SyncResult:
     """The text is unchanged: no re-chunking and no re-embedding (decision 6).
 
     A new title changes what a cached answer shows in its sources, so it
-    invalidates the tenant's answer cache. Metadata is not part of any answer.
+    invalidates the tenant's answer cache. Metadata is not part of any answer. A change of
+    groups, already applied by the caller, counts as an update too.
     """
     title_changed = document.filename != payload.title
     metadata_changed = document.metadata_ != payload.metadata
@@ -203,7 +220,7 @@ async def _update_title_and_metadata(
     _remember_source_time(document, payload)
     if title_changed:
         await cache.incr(f"corpus_version:{document.tenant_id}")
-    return "updated" if title_changed or metadata_changed else "unchanged"
+    return "updated" if title_changed or metadata_changed or groups_changed else "unchanged"
 
 
 def _is_older_than_stored(document: Document, payload: SyncPayload) -> bool:
@@ -264,6 +281,7 @@ async def _insert_if_absent(
             sha256=content_hash(payload.content),
             metadata_=payload.metadata,
             source_updated_at=payload.source_updated_at,
+            access_groups=payload.access_groups or [],
             raw_content=raw_content,
             status="pending",
         )
