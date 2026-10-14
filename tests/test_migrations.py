@@ -122,12 +122,54 @@ def test_the_external_id_migration_downgrades_only_without_synced_documents(
             {"id": uuid.uuid4(), "tenant": tenant_id},
         )
 
-    refused = _run_alembic(url, "downgrade", "-1")
+    refused = _run_alembic(url, "downgrade", "c39ac7386406")
 
     assert refused.returncode != 0
     assert "external_id" in refused.stderr
     with engine.begin() as connection:
         connection.execute(text("DELETE FROM documents"))
     engine.dispose()
+    assert _run_alembic(url, "downgrade", "c39ac7386406").returncode == 0
+    assert _run_alembic(url, "upgrade", "head").returncode == 0
+
+
+def test_the_access_groups_migration_gives_existing_rows_no_groups(
+    scratch_database_url: str,
+) -> None:
+    url = scratch_database_url
+    assert _run_alembic(url, "upgrade", "5e2b7c1d9a34").returncode == 0
+    engine = create_sync_engine(url)
+    with engine.begin() as connection:
+        tenant_id, document_id = uuid.uuid4(), uuid.uuid4()
+        connection.execute(
+            text("INSERT INTO tenants (id, name) VALUES (:id, 'acme')"), {"id": tenant_id}
+        )
+        connection.execute(
+            text(
+                "INSERT INTO documents (id, tenant_id, filename, content_type, sha256, status) "
+                "VALUES (:id, :tenant, 'old.txt', 'text/plain', 'abc', 'ready')"
+            ),
+            {"id": document_id, "tenant": tenant_id},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO chunks (id, document_id, tenant_id, chunk_index, content, embedding, "
+                "metadata) VALUES (:id, :document, :tenant, 0, 'old', :embedding, '{}')"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "document": document_id,
+                "tenant": tenant_id,
+                "embedding": str([0.0] * Settings().embedding_dimension),
+            },
+        )
+    engine.dispose()
+
+    assert _run_alembic(url, "upgrade", "head").returncode == 0
+
+    assert _scalar(url, "SELECT access_groups::text FROM documents") == "{}"
+    assert _scalar(url, "SELECT access_groups::text FROM chunks") == "{}"
+    for index in ("ix_documents_access_groups", "ix_chunks_access_groups"):
+        assert _scalar(url, f"SELECT indexdef FROM pg_indexes WHERE indexname = '{index}'")
     assert _run_alembic(url, "downgrade", "-1").returncode == 0
     assert _run_alembic(url, "upgrade", "head").returncode == 0

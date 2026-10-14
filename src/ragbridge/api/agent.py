@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge import tracing
+from ragbridge.access import AccessGroups, normalise_scope
 from ragbridge.agent.loop import run_agent
 from ragbridge.agent.planner import Planner, get_planner
 from ragbridge.api.query import SNIPPET_LENGTH, Source
@@ -31,6 +32,9 @@ class AgentRequest(BaseModel):
     """Ask for fewer searches than the server allows. Never more: the
     ceiling is settings.agent_max_steps (decision 4, docs/plans/phase-4.md).
     """
+    access_groups: AccessGroups | None = None
+    """Only search chunks of documents sharing at least one of these groups, in every step.
+    Missing: search everything. An empty list: a caller with no groups, who finds nothing."""
 
 
 class StepInfo(BaseModel):
@@ -65,6 +69,7 @@ async def answer_with_agent(
     purpose - the step ceiling already bounds the run.
     """
     max_steps = min(request.max_steps or settings.agent_max_steps, settings.agent_max_steps)
+    access_groups = normalise_scope(request.access_groups)
 
     async def search(query: str) -> list[SearchResult]:
         [embedding] = await embedder.embed([query])
@@ -77,6 +82,7 @@ async def answer_with_agent(
             max_term_share=settings.keyword_max_term_frequency,
             rarity_weighting=settings.keyword_rarity_weighting,
             tenant_id=tenant.id,
+            access_groups=access_groups,
         )
         return await reranker.rerank(query, candidates, TOP_K_PER_STEP)
 

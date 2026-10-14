@@ -24,6 +24,9 @@ their own document). The response includes a `status`
 `GET /documents/{id}` until `status` is no longer `pending`/`processing`. A `failed`
 document's `error` field explains why (a corrupt PDF, for example).
 
+To limit who can find a document, add `-F "access_groups=hr"` (repeat the field for more
+than one group); see [Limit what a request can see](#limit-what-a-request-can-see-access-groups).
+
 ## Ask a question
 
 ```bash
@@ -191,7 +194,12 @@ Each call is independent; there are no sessions or follow-up questions.
 curl -H "Authorization: Bearer <key>" http://localhost:8000/documents
 curl -H "Authorization: Bearer <key>" http://localhost:8000/documents/<id>
 curl -H "Authorization: Bearer <key>" -X DELETE http://localhost:8000/documents/<id>
+curl -H "Authorization: Bearer <key>" -H "Content-Type: application/json" -X PATCH \
+  -d '{"access_groups": ["hr"]}' http://localhost:8000/documents/<id>
 ```
+
+`PATCH` changes only who may see the document, and it is the way to do that for an upload
+(see [access groups](#limit-what-a-request-can-see-access-groups)).
 
 ## Keep documents in sync with your records (external ids)
 
@@ -221,6 +229,7 @@ curl -X PUT http://localhost:8000/documents/external/article:42 \
     "error": null,
     "metadata": {"locale": "en"},
     "source_updated_at": "2026-09-21T10:00:00Z",
+    "access_groups": [],
     "created_at": "2026-09-21T14:38:16.201847Z",
     "updated_at": "2026-09-21T14:38:16.201847Z"
   }
@@ -236,7 +245,7 @@ curl -X PUT http://localhost:8000/documents/external/article:42 \
 The body of `PUT` has `title` (1-500 characters; shown as the document's name in
 `sources`), `content` (text with at least one character that is not whitespace, at most
 `MAX_UPLOAD_SIZE` bytes as UTF-8), and optionally `metadata` (a JSON object, at most 16 KB; it is **not** searched yet) and
-`source_updated_at` (with a time zone).
+`source_updated_at` (with a time zone), and `access_groups` (below).
 
 `PUT` replaces the record's whole state, so **omitting `metadata` on an existing document clears
 it** (it becomes `{}`), while omitting `source_updated_at` keeps the stored time. `metadata` comes
@@ -251,7 +260,7 @@ an upload.
 |---|---|---|
 | `created` | 201 (202 if queued) | A new document. |
 | `replaced` | 200 (202 if queued) | The text changed: the chunks were replaced and re-embedded. |
-| `updated` | 200 | Only the title or `metadata` changed. **Nothing was re-chunked or re-embedded.** |
+| `updated` | 200 | Only the title, `metadata` or `access_groups` changed. **Nothing was re-chunked or re-embedded.** |
 | `unchanged` | 200 | The same record again. Nothing was written. |
 | `stale` | 200 | Ignored: `source_updated_at` is older than the stored one (below). |
 
@@ -313,6 +322,65 @@ processed or replaced.
 
 Why it is built this way: [ADR 0010](adr/0010-external-document-ids.md) and the
 [plan](plans/external-ids.md).
+
+## Limit what a request can see (access groups)
+
+A tenant's documents can be split by who may read them: a public help centre next to an
+intranet, say. Label each document with **access groups**, and name the groups of the person
+asking when you search or ask.
+
+```bash
+# Label a document when you write it...
+curl -X POST http://localhost:8000/documents -H "Authorization: Bearer <key>" \
+  -F "file=@handbook.pdf;type=application/pdf" -F "access_groups=hr" -F "access_groups=managers"
+curl -X PUT http://localhost:8000/documents/external/article:42 \
+  -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"title": "Holiday rules", "content": "...", "access_groups": ["hr"]}'
+# ...or change the label later, without touching the text.
+curl -X PATCH http://localhost:8000/documents/<id> -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" -d '{"access_groups": ["hr", "public"]}'
+
+# Ask as someone who belongs to "public" and "support".
+curl -X POST http://localhost:8000/query -H "Authorization: Bearer <key>" \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How many holiday days do I get?", "access_groups": ["public", "support"]}'
+```
+
+`/query`, `/search` and `/agent` all take `access_groups`. A request finds a document only
+when the two share **at least one** group, in the retrieved chunks and in the surrounding
+context the answer model reads alike.
+
+| `access_groups` in the request | What it finds |
+|---|---|
+| missing | everything the tenant has, as before |
+| `["hr", "public"]` | documents labelled `hr` or `public` (or both) |
+| `[]` | nothing: a caller who belongs to no group |
+
+A document **with no groups** is found by no request that names groups, not even `[]`; only
+a request that leaves the field out finds it. Label a document `public` on purpose to show
+it to everyone you scope. Group names are 1-64 ASCII letters, digits or `. _ : -`, starting
+with a letter or digit; one document or request carries at most 32. Order and repeats do not
+matter.
+
+- **Writing.** `POST /documents` takes the label as a repeated form field. Uploading a file
+  that is already stored, with *different* groups, is a `409`: the existing document is kept,
+  so use `PATCH`. `PUT` by external id keeps the stored groups when `access_groups` is
+  missing and replaces them when it is sent, even as `[]`; a change on its own reports
+  `"result": "updated"`.
+- **Changing a label is immediate.** The document's chunks change in the same transaction,
+  also while new text for it is still `pending`, and cached answers built under the old
+  groups are dropped. The answer cache is keyed by the groups too, so one group never gets
+  an answer written for another.
+- **Groups limit a request; they do not authenticate it.** The caller names its own groups,
+  so a key that can send any `access_groups` can also leave them out and see everything. Put
+  the check in the server that calls ragbridge, and give browsers and end users a way in
+  that adds the groups itself, never one that takes them from the user.
+- **MCP tools take no groups.** An argument chosen by a model protects nothing, so MCP
+  keeps seeing everything the key's tenant has.
+
+If the group is small next to the rest of the tenant, a search can return fewer chunks than
+`RETRIEVAL_CANDIDATES`: the vector index stops looking after `hnsw.max_scan_tuples` rows
+(20 000 by default in pgvector).
 
 ## Multi-tenancy and API keys
 
