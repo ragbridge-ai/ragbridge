@@ -28,6 +28,18 @@ score on entirely different scales (cosine similarity vs. ``ts_rank``).
 """
 
 
+def _in_groups(access_groups: Sequence[str] | None) -> list[ColumnElement[bool]]:
+    """The conditions that limit a read of ``chunks`` to ``access_groups``, to splat into ``where``.
+
+    ``None`` is a caller that sent no groups and sees everything: no condition, as before.
+    A list, even an empty one, keeps only the chunks that share at least one of its groups
+    (``&&``), so ``[]`` matches nothing, and so does a chunk whose groups are ``{}``.
+    """
+    if access_groups is None:
+        return []
+    return [Chunk.access_groups.op("&&")(list(access_groups))]
+
+
 @dataclass(frozen=True)
 class ChunkProvenance:
     """How one chunk got into the candidate set: which arm found it, and where.
@@ -47,9 +59,16 @@ class ChunkProvenance:
 
 
 async def vector_search(
-    session: AsyncSession, embedding: list[float], limit: int, *, tenant_id: uuid.UUID
+    session: AsyncSession,
+    embedding: list[float],
+    limit: int,
+    *,
+    tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None = None,
 ) -> list[SearchResult]:
     """Return ``tenant_id``'s chunks whose embedding is nearest to ``embedding``, nearest first.
+
+    With ``access_groups``, only chunks sharing one of those groups (``_in_groups``).
 
     Score is ``1 - cosine_distance``: 1.0 for an exact match, lower for a
     less similar chunk - the same convention ``POST /query`` used in
@@ -72,7 +91,7 @@ async def vector_search(
     result = await session.execute(
         select(Chunk, Document, distance)
         .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.tenant_id == tenant_id)
+        .where(Chunk.tenant_id == tenant_id, *_in_groups(access_groups))
         .order_by(distance)
         .limit(limit)
     )
@@ -142,9 +161,16 @@ class _TermStats:
 
 
 async def _term_stats(
-    session: AsyncSession, words: list[str], tenant_id: uuid.UUID
+    session: AsyncSession,
+    words: list[str],
+    tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None,
 ) -> _TermStats | None:
     """Count, in one pass over the tenant's chunks, how many contain each word.
+
+    Only the chunks the caller may see are counted: a word's frequency over chunks it
+    cannot see would change which of its query words are dropped or weighted, and so its
+    ranking.
 
     ``None`` when there is nothing to count or the tenant has fewer than
     ``MIN_CHUNKS_FOR_TERM_FREQUENCY`` chunks: with a handful of chunks a word's
@@ -158,7 +184,9 @@ async def _term_stats(
         for word in distinct
     ]
     result = await session.execute(
-        select(func.count(), *counts).where(Chunk.tenant_id == tenant_id)
+        select(func.count(), *counts).where(
+            Chunk.tenant_id == tenant_id, *_in_groups(access_groups)
+        )
     )
     total, *per_word = result.one()
     if total < MIN_CHUNKS_FOR_TERM_FREQUENCY:
@@ -185,6 +213,7 @@ async def _rarity_weighted_rows(
     stats: _TermStats,
     limit: int,
     tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None,
 ) -> list[SearchResult]:
     """Chunks containing any of ``words``, ranked by the summed rarity of the words they hold.
 
@@ -204,7 +233,11 @@ async def _rarity_weighted_rows(
     result = await session.execute(
         select(Chunk, Document, weight)
         .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.content_tsv.op("@@")(or_query), Chunk.tenant_id == tenant_id)
+        .where(
+            Chunk.content_tsv.op("@@")(or_query),
+            Chunk.tenant_id == tenant_id,
+            *_in_groups(access_groups),
+        )
         .order_by(weight.desc(), rank.desc())
         .limit(limit)
     )
@@ -217,10 +250,14 @@ async def keyword_search(
     limit: int,
     *,
     tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None = None,
     max_term_share: float = 1.0,
     rarity_weighting: bool = False,
 ) -> list[SearchResult]:
     """Return ``tenant_id``'s chunks that best match ``query`` by full-text search, best first.
+
+    With ``access_groups``, only chunks sharing one of those groups (``_in_groups``),
+    including in the word statistics and the OR fallback.
 
     Uses ``websearch_to_tsquery``, the parser built for text a user actually
     types (bare words, ``"quoted phrases"``, ``or``, ``-excluded``) - unlike
@@ -235,28 +272,40 @@ async def keyword_search(
     """
     stats = None
     if (max_term_share < 1.0 or rarity_weighting) and not _STRICT_SYNTAX.search(query):
-        stats = await _term_stats(session, _WORD.findall(query), tenant_id)
+        stats = await _term_stats(session, _WORD.findall(query), tenant_id, access_groups)
     query = _without_common_words(query, stats, max_term_share)
-    rows = await _keyword_rows(session, query, limit, tenant_id)
+    rows = await _keyword_rows(session, query, limit, tenant_id, access_groups)
     if not rows:
         words = _or_words(query)
         if words is not None:
             if rarity_weighting and stats is not None:
-                rows = await _rarity_weighted_rows(session, words, stats, limit, tenant_id)
+                rows = await _rarity_weighted_rows(
+                    session, words, stats, limit, tenant_id, access_groups
+                )
             else:
-                rows = await _keyword_rows(session, " or ".join(words), limit, tenant_id)
+                rows = await _keyword_rows(
+                    session, " or ".join(words), limit, tenant_id, access_groups
+                )
     return rows
 
 
 async def _keyword_rows(
-    session: AsyncSession, query: str, limit: int, tenant_id: uuid.UUID
+    session: AsyncSession,
+    query: str,
+    limit: int,
+    tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None,
 ) -> list[SearchResult]:
     tsquery = func.websearch_to_tsquery("english", query)
     rank = func.ts_rank(Chunk.content_tsv, tsquery).label("rank")
     result = await session.execute(
         select(Chunk, Document, rank)
         .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.content_tsv.op("@@")(tsquery), Chunk.tenant_id == tenant_id)
+        .where(
+            Chunk.content_tsv.op("@@")(tsquery),
+            Chunk.tenant_id == tenant_id,
+            *_in_groups(access_groups),
+        )
         .order_by(rank.desc())
         .limit(limit)
     )
@@ -300,10 +349,14 @@ async def hybrid_search_with_provenance(
     mode: Literal["hybrid", "vector", "keyword"],
     candidates: int,
     tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None = None,
     max_term_share: float = 1.0,
     rarity_weighting: bool = False,
 ) -> tuple[list[SearchResult], dict[uuid.UUID, ChunkProvenance]]:
     """Retrieve up to ``candidates`` of ``tenant_id``'s chunks for a question, using ``mode``.
+
+    ``access_groups`` limits both arms to chunks sharing one of those groups; ``None``
+    does not limit them (``_in_groups``).
 
     Returns up to ``candidates`` rows, not ``top_k``: narrowing the
     candidate set down to what a response actually returns is the
@@ -324,7 +377,9 @@ async def hybrid_search_with_provenance(
     the arms' own result lists, so it costs no extra query.
     """
     if mode == "vector":
-        rows = await vector_search(session, embedding, candidates, tenant_id=tenant_id)
+        rows = await vector_search(
+            session, embedding, candidates, tenant_id=tenant_id, access_groups=access_groups
+        )
         vector_ranks = _ranks(rows)
         return rows, {
             chunk.id: ChunkProvenance(vector_ranks[chunk.id], None, score)
@@ -336,6 +391,7 @@ async def hybrid_search_with_provenance(
             query,
             candidates,
             tenant_id=tenant_id,
+            access_groups=access_groups,
             max_term_share=max_term_share,
             rarity_weighting=rarity_weighting,
         )
@@ -345,12 +401,15 @@ async def hybrid_search_with_provenance(
             for chunk, _, score in rows
         }
 
-    vector_rows = await vector_search(session, embedding, candidates, tenant_id=tenant_id)
+    vector_rows = await vector_search(
+        session, embedding, candidates, tenant_id=tenant_id, access_groups=access_groups
+    )
     keyword_rows = await keyword_search(
         session,
         query,
         candidates,
         tenant_id=tenant_id,
+        access_groups=access_groups,
         max_term_share=max_term_share,
         rarity_weighting=rarity_weighting,
     )
@@ -371,6 +430,7 @@ async def hybrid_search(
     mode: Literal["hybrid", "vector", "keyword"],
     candidates: int,
     tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None = None,
     max_term_share: float = 1.0,
     rarity_weighting: bool = False,
 ) -> list[SearchResult]:
@@ -386,6 +446,7 @@ async def hybrid_search(
         mode=mode,
         candidates=candidates,
         tenant_id=tenant_id,
+        access_groups=access_groups,
         max_term_share=max_term_share,
         rarity_weighting=rarity_weighting,
     )
@@ -398,13 +459,20 @@ def _ranks(rows: Sequence[SearchResult]) -> dict[uuid.UUID, int]:
 
 
 async def fetch_neighbours(
-    session: AsyncSession, rows: list[SearchResult], *, distance: int, tenant_id: uuid.UUID
+    session: AsyncSession,
+    rows: list[SearchResult],
+    *,
+    distance: int,
+    tenant_id: uuid.UUID,
+    access_groups: Sequence[str] | None = None,
 ) -> dict[tuple[uuid.UUID, int], Chunk]:
     """The chunks up to ``distance`` before and after each of ``rows``, keyed by
     ``(document_id, chunk_index)``.
 
     Only chunks of ``tenant_id`` are returned, and only from the documents the
-    retrieved chunks belong to. The embedding column is not loaded: the answer
+    retrieved chunks belong to. With ``access_groups`` a neighbour must also share one
+    of them: a document's chunks normally all carry its groups, so this is a second
+    layer, not the first. The embedding column is not loaded: the answer
     model needs text, not vectors.
     """
     retrieved = {(chunk.document_id, chunk.chunk_index) for chunk, _, _ in rows}
@@ -421,6 +489,7 @@ async def fetch_neighbours(
         .options(defer(Chunk.embedding))
         .where(
             Chunk.tenant_id == tenant_id,
+            *_in_groups(access_groups),
             tuple_(Chunk.document_id, Chunk.chunk_index).in_(wanted),
         )
     )
