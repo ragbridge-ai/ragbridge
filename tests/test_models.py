@@ -281,3 +281,66 @@ def test_a_new_document_has_empty_metadata_and_no_external_id(app_with_database:
     assert stored.metadata_ == {}
     assert stored.source_updated_at is None
     assert stored.updated_at is not None
+
+
+def test_access_groups_round_trip_and_default_to_empty(app_with_database: FastAPI) -> None:
+    async def run() -> tuple[Document, Document, Chunk, Chunk]:
+        session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+        dimension = get_settings().embedding_dimension
+        async with session_factory() as session:
+            tenant = Tenant(name="acme")
+            session.add(tenant)
+            await session.flush()
+            documents = [
+                Document(
+                    tenant_id=tenant.id,
+                    filename=name,
+                    content_type="text/plain",
+                    sha256=name,
+                    access_groups=groups,
+                )
+                for name, groups in (("labelled", ["hr", "public"]), ("plain", None))
+                if groups is not None
+            ] + [
+                Document(
+                    tenant_id=tenant.id, filename="plain", content_type="text/plain", sha256="p"
+                )
+            ]
+            session.add_all(documents)
+            await session.flush()
+            chunks = [
+                Chunk(
+                    document_id=documents[0].id,
+                    tenant_id=tenant.id,
+                    chunk_index=0,
+                    content="a",
+                    embedding=[0.0] * dimension,
+                    access_groups=["hr"],
+                ),
+                Chunk(
+                    document_id=documents[1].id,
+                    tenant_id=tenant.id,
+                    chunk_index=0,
+                    content="b",
+                    embedding=[0.0] * dimension,
+                ),
+            ]
+            session.add_all(chunks)
+            await session.commit()
+            ids = [document.id for document in documents], [chunk.id for chunk in chunks]
+        async with session_factory() as session:
+            stored_documents = [await session.get(Document, id_) for id_ in ids[0]]
+            stored_chunks = [await session.get(Chunk, id_) for id_ in ids[1]]
+        assert all(item is not None for item in (*stored_documents, *stored_chunks))
+        labelled, plain = stored_documents
+        labelled_chunk, plain_chunk = stored_chunks
+        assert labelled is not None and plain is not None
+        assert labelled_chunk is not None and plain_chunk is not None
+        return labelled, plain, labelled_chunk, plain_chunk
+
+    labelled, plain, labelled_chunk, plain_chunk = asyncio.run(run())
+
+    assert labelled.access_groups == ["hr", "public"]
+    assert plain.access_groups == []
+    assert labelled_chunk.access_groups == ["hr"]
+    assert plain_chunk.access_groups == []

@@ -84,12 +84,19 @@ async def store_chunks(
 ) -> None:
     """Add ``chunks`` to ``document`` and mark it ready.
 
+    Each chunk takes the document's ``access_groups`` as they are *now*. The caller
+    holds the document's row lock here, whereas ``build_chunks`` ran before it - a
+    document whose groups changed while its text was being embedded must not get
+    chunks with the old ones.
+
     With ``replace``, the document's existing chunks are deleted first, in the
     same transaction: a search sees the old chunks or the new ones, never a
     mixture and never none (decision 9, docs/plans/external-ids.md).
     """
     if replace:
         await session.execute(delete(Chunk).where(Chunk.document_id == document.id))
+    for chunk in chunks:
+        chunk.access_groups = list(document.access_groups)
     session.add_all(chunks)
     document.content = "\n\n".join(pages)
     document.status = "ready"

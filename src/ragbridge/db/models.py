@@ -17,7 +17,7 @@ from sqlalchemy import (
     Uuid,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -92,6 +92,7 @@ class Document(Base):
             unique=True,
             postgresql_where=text("external_id IS NULL"),
         ),
+        Index("ix_documents_access_groups", "access_groups", postgresql_using="gin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -129,6 +130,12 @@ class Document(Base):
     )
     """When the client says the record last changed, used to ignore an
     out-of-order write (decision 7, docs/plans/external-ids.md)."""
+    access_groups: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=text("'{}'::text[]")
+    )
+    """The access groups that may see this document. Empty means no scoped caller
+    sees it (decision 2, docs/plans/chat-roadmap.md); a caller that sends no groups
+    still sees everything."""
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -162,6 +169,7 @@ class Chunk(Base):
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
         Index("ix_chunks_content_tsv", "content_tsv", postgresql_using="gin"),
+        Index("ix_chunks_access_groups", "access_groups", postgresql_using="gin"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
@@ -173,6 +181,12 @@ class Chunk(Base):
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(get_settings().embedding_dimension))
     metadata_: Mapped[dict[str, Any]] = mapped_column("metadata", JSONB, default=dict)
+    access_groups: Mapped[list[str]] = mapped_column(
+        ARRAY(Text), default=list, server_default=text("'{}'::text[]")
+    )
+    """A copy of its document's ``access_groups``, so retrieval can filter on ``chunks``
+    alone, for the same reason ``tenant_id`` is copied here. Set by ``store_chunks`` from
+    the document, under its row lock."""
     content_tsv: Mapped[str] = mapped_column(
         TSVECTOR, Computed("to_tsvector('english', content)", persisted=True)
     )

@@ -146,3 +146,51 @@ def test_process_document_reads_a_pdf_with_the_configured_extraction(
 
 def test_the_worker_uses_the_configured_concurrency() -> None:
     assert WorkerSettings.max_jobs == get_settings().worker_max_jobs
+
+
+class _RegroupingEmbedder:
+    """Changes the document's access groups while it is being embedded.
+
+    Stands in for a request that changes the groups after the worker has read the
+    document and before it stores the chunks.
+    """
+
+    def __init__(
+        self,
+        inner: FakeEmbedder,
+        session_factory: async_sessionmaker[AsyncSession],
+        document_id: uuid.UUID,
+        groups: list[str],
+    ) -> None:
+        self._inner = inner
+        self._session_factory = session_factory
+        self._document_id = document_id
+        self._groups = groups
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        async with self._session_factory() as session:
+            document = await session.get(Document, self._document_id)
+            assert document is not None
+            document.access_groups = self._groups
+            await session.commit()
+        return await self._inner.embed(texts)
+
+
+def test_process_document_stores_the_groups_the_document_has_when_the_chunks_are_stored(
+    app_with_database: FastAPI,
+) -> None:
+    settings = Settings()
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+
+    async def run() -> list[list[str]]:
+        document_id = await _create_pending_document(
+            session_factory, raw_content=b"Some text to embed.", content_type="text/plain"
+        )
+        ctx = _ctx(session_factory, settings)
+        ctx["embedder"] = _RegroupingEmbedder(
+            FakeEmbedder(settings.embedding_dimension), session_factory, document_id, ["hr"]
+        )
+        await process_document(ctx, str(document_id))
+        return [chunk.access_groups for chunk in await fetch_chunks(session_factory, document_id)]
+
+    assert asyncio.run(run()) == [["hr"]]
