@@ -435,3 +435,111 @@ whether a small group in a large tenant still gets its full candidate count unde
 
 Not in this step: `requires_access_scope` and every `403` (7.2), MCP, and the PHP client
 (P1).
+
+### Step 7.1 outcome
+
+Written after the step, so the plan above stays as it was decided and this records where
+building it disagreed.
+
+**Where reality differed from the plan**
+
+- The corpus-version bump for a changed group set happens **after** the commit, not before.
+  The first version bumped inside `set_access_groups`, ahead of the commit, which leaves a
+  window in which a query reads the new version but still reads the old groups, and caches
+  an answer built from them under the new version, where it stays until it expires. It was
+  found by reading the code, not by a test. `set_access_groups` now only writes and says
+  whether anything changed; `PATCH` and `PUT` bump once the transaction is committed
+  (`bump_corpus_version`). A test records, at every bump, the groups another connection
+  sees, and fails when the bump moves back before the commit - each of the two paths was
+  mutation-checked.
+- Each protection was broken once by hand, to see that a test notices. Three tests were
+  missing at first, and added:
+  - the corpus-version order for `PATCH` (the test recorded the groups at the bump but did
+    not assert them for `PATCH`);
+  - the answer-cache key, which the isolation matrix could not see, because every matrix test
+    starts from an empty cache and asks one scope; a test now asks every scope in turn on one
+    corpus;
+  - the surrounding context of `/query`, whose scope can only be seen when a chunk next to a
+    visible one carries another group. A document's chunks normally share its groups, so
+    that test labels the middle chunk by hand.
+- What breaks which level of test: the direct tests (`test_retrieval_access.py`) catch all
+  five reads of chunks (the vector arm, the keyword query, the OR fallback, the word
+  statistics and the neighbours); `test_api_access.py` catches the cache key, sorting and
+  de-duplication, `None` and `[]` sharing a key, the agent and the context ignoring the
+  field; and the matrix catches the vector arm, the keyword query and the three endpoints
+  not passing the scope. The matrix **cannot** reach three reads, and says so: the word
+  statistics and the rarity fallback need at least 20 chunks in a tenant
+  (`MIN_CHUNKS_FOR_TERM_FREQUENCY`), and a neighbour of a visible chunk carries the same
+  groups. Only the direct tests cover them.
+- The `PUT` flow gained no new result: a change of groups on its own is `updated`, and a
+  `stale` write changes nothing, groups included.
+- One existing test changed. `test_the_external_id_migration_downgrades_only_without_synced_documents`
+  stepped back with `downgrade -1`, which now means this step's migration. It names its
+  target revision (`c39ac7386406`) instead; its assertions are the same. It is not a
+  security or isolation test.
+- `tests/helpers.py` gained `add_document`, `new_tenant` and `tenant_id_for_key`, shared by
+  the three new test modules.
+
+**Results**
+
+781 tests, up from 646. No existing test other than the one above was edited, and every
+retrieval test written before this step passes unchanged with `access_groups` left out,
+which is the evidence that the default is a no-op.
+
+Measured on a scratch database with 59,920 chunks of random 768-dimension vectors in one
+tenant, in four groups: `big` 59,000 chunks, `small` 750 (1.3%), `tiny` 150 (0.25%) and
+`rare` 20 (0.03%); `LIMIT 20`, one query vector, one run each, on a laptop. Times are
+single runs and only meant to show orders of magnitude.
+
+| Vector arm, what the planner picks by itself | Plan | Results | Time |
+|---|---|---|---|
+| no groups, or `big` | HNSW index scan | 20 | 1.2-1.3 ms |
+| `small` | bitmap scan of `ix_chunks_access_groups`, exact sort | 20 | 5.6 ms |
+| `tiny` | the same | 20 | 4.2 ms |
+| `rare` | the same | 20 | 3.9 ms |
+
+So the GIN index on `chunks.access_groups` is used where it matters: a small group is
+answered exactly, with every chunk it has. A small group never reaches the HNSW index.
+
+To see what the HNSW index does with a filter, the other indexes were dropped and sequential
+scans switched off, so HNSW was the only way to answer (a first attempt only switched scans
+off, and the planner used the `tenant_id` index instead, so it measured nothing):
+
+| Group | `iterative_scan = relaxed_order` | `iterative_scan = off` |
+|---|---|---|
+| `big` | 20 results, 1.2 ms | 20 results, 1.1 ms |
+| `small` | 20 results, 57 ms | **0** results |
+| `tiny` | 20 results, 59 ms | **0** results |
+| `rare` | **4** results, 72 ms | **0** results |
+
+Without the iterative scan a filtered group comes back empty, which is Phase 3 decision 3
+again, for groups this time. With it, the walk stops at `hnsw.max_scan_tuples` (20,000 by
+default) and `rare`, whose chunks are 1 in 3,000, got 4 of its 20. Lowering the limit
+shows the same effect directly: at 5,000 `small`, `tiny` and `rare` got 20, 13 and 1; at
+1,000 they got 10, 2 and 0.
+
+The keyword arm did not use `ix_chunks_access_groups` at all: with and without the index
+the planner chose `ix_chunks_tenant_id`, in 6.7-8.2 ms, and returned the same rows (20, 15,
+3 and 1 for the four groups, since only 1 chunk in 50 contains the query word). On this data
+the new index helps the vector arm and not the keyword arm.
+
+**Still not done - stated, not hidden**
+
+- Nothing makes a key send groups. A caller that leaves `access_groups` out still sees every
+  document of its tenant, so the groups are a filter, not an access check, until a key can
+  be marked to require them.
+- Real embeddings cluster; these were uniform random vectors, so how a small group fares
+  under the iterative scan on real data is not known. Neither is how the plans change at
+  much larger tenants: the planner chose the exact path for small groups here because the
+  tenant is small enough for it.
+- The cost of a `PATCH` was not measured. It rewrites every chunk of the document, and
+  `access_groups` is indexed, so each rewritten row is inserted again in every index of
+  `chunks`, the HNSW index included. That is the price of an in-place change without
+  re-embedding, reasoned from the schema, not benchmarked.
+- The migration was run on empty and small tables only. `CREATE INDEX` without
+  `CONCURRENTLY` blocks writes to `chunks` while it builds, which is unmeasured on a large
+  table; adding the column with a constant default does not rewrite it.
+- A document whose new text is `pending` was tested with a queue that never runs the job,
+  and the worker with the fake queue. No real Redis and `arq` worker run was repeated for
+  this step.
+- Group names are case-sensitive: `HR` and `hr` are two groups.
