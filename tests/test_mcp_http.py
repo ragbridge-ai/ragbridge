@@ -17,6 +17,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 from ragbridge.auth import generate_api_key
 from ragbridge.chat import get_chatter
+from tests.helpers import create_api_key, tenant_id_for_key
 
 SECRET = "The launch code is 8842."
 
@@ -187,3 +188,27 @@ def test_ask_sources_are_exactly_the_chunks_the_model_received(
     assert sum(not source["context_only"] for source in sources) == 5
     assert [source["context_only"] for source in sources][-1] is True
     assert all(source["score"] == 0.0 for source in sources if source["context_only"])
+
+
+def test_a_key_that_requires_an_access_scope_gets_a_readable_error_from_every_tool(
+    app_with_database: FastAPI, tenant_with_key: str
+) -> None:
+    session_factory = app_with_database.state.session_factory
+
+    async def make_scoped_key() -> str:
+        tenant_id = await tenant_id_for_key(session_factory, tenant_with_key)
+        return await create_api_key(session_factory, tenant_id, requires_access_scope=True)
+
+    scoped_key = asyncio.run(make_scoped_key())
+
+    results = _mcp(
+        app_with_database,
+        (scoped_key, "search_documents", {"query": "x"}),
+        (scoped_key, "ask", {"question": "x"}),
+        (scoped_key, "list_documents", {}),
+    )
+
+    for result in results:
+        assert result.is_error
+        assert "requires access_groups" in result.content[0].text
+        assert "MCP" in result.content[0].text
