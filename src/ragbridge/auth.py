@@ -2,6 +2,8 @@
 
 import hashlib
 import secrets
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
@@ -60,11 +62,23 @@ def _unauthorized() -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid API key")
 
 
-async def get_tenant(
+@dataclass(frozen=True)
+class Caller:
+    """Who is calling: the tenant, and whether its key must name access groups."""
+
+    tenant: Tenant
+    requires_access_scope: bool
+
+
+async def get_caller(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
     session: Annotated[AsyncSession, Depends(get_session)],
-) -> Tenant:
-    """FastAPI dependency: authenticate a request and return its tenant.
+) -> Caller:
+    """FastAPI dependency: authenticate a request and return its ``Caller``.
+
+    Only the endpoints that accept a key marked ``requires_access_scope`` use this
+    directly (``/search``, ``/query`` and ``/agent``); every other endpoint uses
+    ``get_tenant``, which turns such a key away.
 
     Missing, malformed, unknown, and revoked keys all raise the same 401
     with the same message - an error that distinguished them would be a
@@ -94,4 +108,35 @@ async def get_tenant(
         api_key.last_used_at = now
         await session.commit()
 
-    return tenant
+    return Caller(tenant, api_key.requires_access_scope)
+
+
+async def get_tenant(caller: Annotated[Caller, Depends(get_caller)]) -> Tenant:
+    """FastAPI dependency: authenticate a request and return its tenant, for a key that
+    may see everything.
+
+    A key marked ``requires_access_scope`` gets a 403. This is the default for every
+    endpoint on purpose: one added later is closed to such a key without anyone having
+    to remember it, and only the endpoints that take ``access_groups`` opt in, through
+    ``get_caller`` and ``check_access_scope`` (decision 3, docs/plans/chat-roadmap.md).
+    The 401 for a bad key comes first, from ``get_caller``.
+    """
+    if caller.requires_access_scope:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this API key cannot manage documents",
+        )
+    return caller.tenant
+
+
+def check_access_scope(caller: Caller, access_groups: Sequence[str] | None) -> None:
+    """Refuse a scoped key's request that names no groups, or an empty list of them.
+
+    A missing field would search everything, and an empty list matches nothing and is
+    almost certainly a bug in the caller; both fail loudly instead.
+    """
+    if caller.requires_access_scope and not access_groups:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="this API key requires access_groups",
+        )

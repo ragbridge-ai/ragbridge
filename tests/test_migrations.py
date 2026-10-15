@@ -171,5 +171,30 @@ def test_the_access_groups_migration_gives_existing_rows_no_groups(
     assert _scalar(url, "SELECT access_groups::text FROM chunks") == "{}"
     for index in ("ix_documents_access_groups", "ix_chunks_access_groups"):
         assert _scalar(url, f"SELECT indexdef FROM pg_indexes WHERE indexname = '{index}'")
-    assert _run_alembic(url, "downgrade", "-1").returncode == 0
+    assert _run_alembic(url, "downgrade", "5e2b7c1d9a34").returncode == 0
+    assert _run_alembic(url, "upgrade", "head").returncode == 0
+
+
+def test_the_scope_migration_leaves_existing_keys_plain(scratch_database_url: str) -> None:
+    url = scratch_database_url
+    assert _run_alembic(url, "upgrade", "b84f1c6a2d97").returncode == 0
+    engine = create_sync_engine(url)
+    with engine.begin() as connection:
+        tenant_id = uuid.uuid4()
+        connection.execute(
+            text("INSERT INTO tenants (id, name) VALUES (:id, 'acme')"), {"id": tenant_id}
+        )
+        connection.execute(
+            text(
+                "INSERT INTO api_keys (id, tenant_id, key_hash, prefix, name) "
+                "VALUES (:id, :tenant, 'hash', 'rb_prefix', 'old')"
+            ),
+            {"id": uuid.uuid4(), "tenant": tenant_id},
+        )
+    engine.dispose()
+
+    assert _run_alembic(url, "upgrade", "head").returncode == 0
+
+    assert _scalar(url, "SELECT requires_access_scope FROM api_keys") is False
+    assert _run_alembic(url, "downgrade", "b84f1c6a2d97").returncode == 0
     assert _run_alembic(url, "upgrade", "head").returncode == 0

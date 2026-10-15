@@ -90,6 +90,14 @@ class RagbridgeClient:
             raise RagbridgeError(f"could not reach ragbridge: {error}") from error
         if response.status_code == httpx.codes.UNAUTHORIZED:
             raise RagbridgeError("ragbridge rejected the API key (missing, unknown, or revoked)")
+        if response.status_code == httpx.codes.FORBIDDEN:
+            # The only 403 the REST API sends: a key that requires access_groups. The tools
+            # take no groups (an argument chosen by a model protects nothing), so such a key
+            # can never succeed here, and saying so beats a bare status code.
+            raise RagbridgeError(
+                "ragbridge refused this API key: it requires access_groups, which MCP tools "
+                "do not send, so it cannot be used through MCP"
+            )
         if response.is_error:
             raise RagbridgeError(f"ragbridge returned HTTP {response.status_code}")
         return response

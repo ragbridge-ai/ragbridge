@@ -57,6 +57,11 @@ class ApiKey(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    requires_access_scope: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
+    """When true, every request made with this key must name its ``access_groups``, and the key
+    cannot manage documents (decision 3, docs/plans/chat-roadmap.md). For a server that lets
+    end users search: a bug in it that forgets the groups then fails loudly instead of
+    searching everything."""
 
 
 class Document(Base):

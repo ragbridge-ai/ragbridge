@@ -344,3 +344,27 @@ def test_access_groups_round_trip_and_default_to_empty(app_with_database: FastAP
     assert plain.access_groups == []
     assert labelled_chunk.access_groups == ["hr"]
     assert plain_chunk.access_groups == []
+
+
+def test_an_api_key_does_not_require_an_access_scope_unless_marked(
+    app_with_database: FastAPI,
+) -> None:
+    async def run() -> tuple[bool, bool]:
+        session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+        async with session_factory() as session:
+            tenant = Tenant(name="acme")
+            session.add(tenant)
+            await session.flush()
+            keys = [
+                ApiKey(tenant_id=tenant.id, key_hash=name, prefix=name, name=name, **flag)
+                for name, flag in (("plain", {}), ("scoped", {"requires_access_scope": True}))
+            ]
+            session.add_all(keys)
+            await session.commit()
+            ids = [key.id for key in keys]
+        async with session_factory() as session:
+            plain, scoped = [await session.get(ApiKey, id_) for id_ in ids]
+        assert plain is not None and scoped is not None
+        return plain.requires_access_scope, scoped.requires_access_scope
+
+    assert asyncio.run(run()) == (False, True)

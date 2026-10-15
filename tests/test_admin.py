@@ -79,6 +79,52 @@ def test_create_key_adds_a_second_working_key_for_the_same_tenant(
     assert response.status_code == 200
 
 
+def _create_tenant(
+    session_factory: async_sessionmaker[AsyncSession], capsys: pytest.CaptureFixture[str]
+) -> uuid.UUID:
+    asyncio.run(admin.create_tenant(session_factory, "acme"))
+    match = re.search(r"Tenant (\S+)", capsys.readouterr().out)
+    assert match is not None
+    return uuid.UUID(match.group(1))
+
+
+def test_create_key_can_make_a_key_that_requires_an_access_scope(
+    app_with_database: FastAPI, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+    tenant_id = _create_tenant(session_factory, capsys)
+
+    asyncio.run(admin.create_key(session_factory, tenant_id, "gateway", requires_access_scope=True))
+    output = capsys.readouterr().out
+    client = TestClient(
+        app_with_database, headers={"Authorization": f"Bearer {_extract_key(output)}"}
+    )
+
+    assert "requires access_groups" in output
+    assert client.get("/documents").status_code == 403
+    assert client.post("/search", json={"query": "x"}).status_code == 403
+    assert (
+        client.post("/search", json={"query": "x", "access_groups": ["public"]}).status_code == 200
+    )
+
+
+def test_create_key_makes_a_plain_key_unless_asked(
+    app_with_database: FastAPI, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
+    tenant_id = _create_tenant(session_factory, capsys)
+
+    asyncio.run(admin.create_key(session_factory, tenant_id, "plain"))
+    output = capsys.readouterr().out
+    client = TestClient(
+        app_with_database, headers={"Authorization": f"Bearer {_extract_key(output)}"}
+    )
+
+    assert "requires access_groups" not in output
+    assert client.get("/documents").status_code == 200
+    assert client.post("/search", json={"query": "x"}).status_code == 200
+
+
 def test_create_key_fails_for_an_unknown_tenant(app_with_database: FastAPI) -> None:
     session_factory: async_sessionmaker[AsyncSession] = app_with_database.state.session_factory
 

@@ -11,12 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ragbridge import tracing
 from ragbridge.access import AccessGroups, normalise_scope
 from ragbridge.api.explain import RetrievalInfo, build_retrieval_info
-from ragbridge.auth import get_tenant
+from ragbridge.auth import Caller, check_access_scope, get_caller
 from ragbridge.cache import Cache, get_cache
 from ragbridge.chat import Chatter, get_chatter
 from ragbridge.config import Settings, get_settings
 from ragbridge.context import add_neighbours, build_context
-from ragbridge.db.models import Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.rerank import Reranker, get_reranker
@@ -104,7 +103,7 @@ def _scope_key(access_groups: list[str] | None) -> str:
 async def answer_query(
     request: QueryRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
-    tenant: Annotated[Tenant, Depends(get_tenant)],
+    caller: Annotated[Caller, Depends(get_caller)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     chatter: Annotated[Chatter, Depends(get_chatter)],
     reranker: Annotated[Reranker, Depends(get_reranker)],
@@ -142,6 +141,8 @@ async def answer_query(
     found it (see ``ragbridge.api.search`` for why those fields are unset,
     not ``None``, otherwise).
     """
+    check_access_scope(caller, request.access_groups)
+    tenant = caller.tenant
     access_groups = normalise_scope(request.access_groups)
     cache_key: str | None = None
     if settings.answer_cache_enabled:

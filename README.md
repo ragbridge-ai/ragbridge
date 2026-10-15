@@ -64,7 +64,9 @@ Add `"explain": true` to `/query` or `/search` to see which search found each ch
 
 Label documents with **access groups** and pass `"access_groups": [...]` to `/query`,
 `/search` or `/agent`, and a request only finds documents that share one of its groups:
-a public help centre and an intranet can share one tenant.
+a public help centre and an intranet can share one tenant. A key created with
+`--requires-access-scope` cannot search without naming its groups, which is the key to give a
+server that lets end users search.
 Details and examples: [API guide](docs/api.md).
 
 ## Keeping it in sync with your application

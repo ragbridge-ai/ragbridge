@@ -11,10 +11,9 @@ from ragbridge.access import AccessGroups, normalise_scope
 from ragbridge.agent.loop import run_agent
 from ragbridge.agent.planner import Planner, get_planner
 from ragbridge.api.query import SNIPPET_LENGTH, Source
-from ragbridge.auth import get_tenant
+from ragbridge.auth import Caller, check_access_scope, get_caller
 from ragbridge.chat import Chatter, get_chatter
 from ragbridge.config import Settings, get_settings
-from ragbridge.db.models import Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.rerank import Reranker, get_reranker
@@ -53,7 +52,7 @@ class AgentResponse(BaseModel):
 async def answer_with_agent(
     request: AgentRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
-    tenant: Annotated[Tenant, Depends(get_tenant)],
+    caller: Annotated[Caller, Depends(get_caller)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     chatter: Annotated[Chatter, Depends(get_chatter)],
     reranker: Annotated[Reranker, Depends(get_reranker)],
@@ -68,6 +67,8 @@ async def answer_with_agent(
     was searched (decision 6, docs/plans/phase-4.md). Synchronous on
     purpose - the step ceiling already bounds the run.
     """
+    check_access_scope(caller, request.access_groups)
+    tenant = caller.tenant
     max_steps = min(request.max_steps or settings.agent_max_steps, settings.agent_max_steps)
     access_groups = normalise_scope(request.access_groups)
 
