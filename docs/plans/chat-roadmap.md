@@ -807,3 +807,63 @@ placeholder pages, `http://localhost:8080/health/ready` answers `{"status": "ok"
 
 Not in this step: tenants, keys and the admin CLI (A2), tokens (A3), conversations (A4),
 and any widget code (Phase W).
+
+### Step A1 outcome
+
+Written after the step, so the plan above stays as it was decided and this records where
+building it disagreed. The code is in `ragbridge-chat`, pull request 1.
+
+**Where reality differed from the plan**
+
+- The core's tag is a variable in the demo's compose file: `${CORE_REF:-v1.4.0}`. The plan
+  gave a fixed tag. A fixed one cannot be tried against a core that is not released yet, and
+  the first run of the stack, made before the tag existed, needed exactly that
+  (`CORE_REF=main`). The default is still the release tag, and a test pins it.
+- Python had to be pinned. Without a `.python-version` file `uv` picked 3.13 on the
+  development machine, while the plan, the Docker image and CI use 3.12. The file is the
+  same one the core has.
+- The image copies named directories (`src`, `migrations`, `demo`, and the project files)
+  instead of the whole working directory, so the tests, the CI files and anything else lying
+  in a checkout are not in it. `.dockerignore` keeps `.git`, caches and `.env*` out of the
+  build context as well.
+- The gateway has a container health check (`/health/ready`), and the demo site waits for it:
+  it starts only once the gateway answers. The plan did not mention one.
+- `mypy` covers `migrations/` and `demo/` as well as `src/` and `tests/`, as the core's
+  covers `migrations/` and `evaluation/`.
+- Starlette's test client now warns that `httpx` is deprecated in favour of `httpx2`. The
+  plan names `httpx` for development, so it was kept; switching is a new dependency and a
+  separate decision.
+
+**Results**
+
+22 tests, and the GitHub workflow ran green in 36 to 41 seconds, with no network and no core.
+The demo stack was started for real, the core built from `main`, and checked from outside:
+
+| URL | Answer |
+|---|---|
+| `localhost:8090/`, `/intranet/hr`, `/intranet/engineering` | `200`, each with its own title |
+| `localhost:8080/health`, `/health/ready` | `200`, `{"status": "ok"}` |
+| `localhost:8001/health` (the core) | `200` |
+
+No database or cache is published to the host (`5432/tcp` and `6379/tcp` only, inside the
+network), the image runs as an unprivileged user (uid 10001), and `/app` holds only the
+project files, `src`, `migrations` and `demo`. Each protection was broken once by hand and a
+test noticed: a readiness probe that never queries the database, a liveness probe that
+depends on it, a broken Alembic environment, and an import of the core in two forms
+(`import ragbridge` and `from ragbridge.config import ...`), while an import from the
+gateway's own package (`from ragbridge_chat import ...`) must not trip the guard.
+
+**Still not done - stated, not hidden**
+
+- **The release tag does not exist on GitHub yet.** The demo's default builds the core from
+  `v1.4.0`, so `docker compose up --build` fails until the tag is pushed; `CORE_REF=main`
+  works. Everything in this step was checked with `CORE_REF=main`.
+- Nothing in CI builds the image or starts the stack. The Dockerfile and compose file are
+  covered by tests that read them and by the run above, not by a job that would notice a
+  broken build on the day it breaks.
+- The demo has no worker for the core, so a large upload would stay `pending`, and a
+  question needs Ollama on the host. Neither matters until documents are uploaded, which
+  the demo does from a later step.
+- The image was built and run on one machine and one architecture (arm64).
+- The demo's database passwords are the ones in the compose file. They are for a stack on a
+  developer's machine and nothing else.
