@@ -625,3 +625,67 @@ Outcome says which.
 
 Not in this step: a command that lists keys, changing the flag of an existing key, and any
 gateway code (Phase A).
+
+### Step 7.2 outcome
+
+Written after the step, so the plan above stays as it was decided and this records where
+building it disagreed.
+
+**Where reality differed from the plan**
+
+- The route-walking guard could not send an empty request. The `/documents` endpoints are
+  turned away by authentication before their request is read, so they are called with
+  nothing. The three retrieval endpoints check the groups *inside* the endpoint, after the
+  body has been validated, so with no body they answered `422`, not `403`, and the guard
+  failed on its first run. It now sends those three a minimal valid body with no groups
+  (`RETRIEVAL` in `tests/test_scoped_keys.py`). The consequence is intended: a new endpoint
+  that takes a body answers `422` in the guard until its author adds it there, which is
+  the moment to decide what a scoped key may do with it.
+- A migration test written in step 7.1 stopped testing what it said it tested. It ended
+  with `downgrade -1`, which after this migration means *this* step's migration, so it kept
+  passing while no longer exercising the 7.1 downgrade at all. It was found while writing
+  this step's own migration test, and both now name their target revision. Breaking the 7.1
+  downgrade by hand fails the test again.
+- The `403` for MCP is one fixed sentence (the key requires `access_groups`, which MCP tools
+  do not send), for all three tools, not the server's own message: `list_documents` is
+  refused with "cannot manage documents", which would be misleading there. The only `403` the
+  REST API sends is for a scoped key, which the client states in a comment.
+- `tests/helpers.py` gained `create_api_key`, used by the scoped-key, MCP and admin tests.
+
+**Results**
+
+811 tests, up from 781. No existing test other than the migration test above was edited,
+and every test written before this step passes with plain keys unchanged: the default is a
+no-op.
+
+Each protection was broken once by hand, and a test noticed every time:
+
+| Broken | Tests that failed |
+|---|---|
+| `get_tenant` lets a scoped key through | 9 (every `/documents` endpoint, the guard) |
+| `/search` skips `check_access_scope` | 3 |
+| `/agent` skips `check_access_scope` | 3 |
+| an empty list is accepted | 3 |
+| the key's flag is ignored | 15 |
+| no `403` message in the MCP client | 1 |
+| `create-key` does not store the flag | 1 |
+
+`get_caller` runs the same single query as `get_tenant` did and only reads one more column,
+so authentication costs no extra round trip. It was not benchmarked.
+
+**Still not done - stated, not hidden**
+
+- A key that requires groups can name **any** groups. The flag stops a request from
+  forgetting them, not from choosing them: the server that holds the key decides who may see
+  what, and a leaked key of this kind sees whatever groups the thief names. That server takes
+  the groups from a signed token, never from the user (decisions 5 and 6, Phase A).
+- A key's flag cannot be changed or listed. `ragbridge-admin` has no command that shows
+  which keys of a tenant require groups, and `list-tenants` still prints no keys at all, so
+  the answer is in the database or in the operator's own notes. Adding one is small, and was
+  left out because the step did not ask for it.
+- The check for a retrieval request lives inside each of the three endpoints, not in a
+  dependency, because it needs the request's body. A fourth endpoint that takes
+  `access_groups` has to call `check_access_scope`, and the guard only notices that if it is
+  also added to `RETRIEVAL`.
+- Nothing here was run against a real server with the stdio MCP proxy (`ragbridge-mcp`)
+  holding a scoped key; it uses the same client class as `/mcp`, which is tested.
