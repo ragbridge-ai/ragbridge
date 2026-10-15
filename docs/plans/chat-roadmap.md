@@ -849,9 +849,9 @@ No database or cache is published to the host (`5432/tcp` and `6379/tcp` only, i
 network), the image runs as an unprivileged user (uid 10001), and `/app` holds only the
 project files, `src`, `migrations` and `demo`. Each protection was broken once by hand and a
 test noticed: a readiness probe that never queries the database, a liveness probe that
-depends on it, a broken Alembic environment, and an import of the core in four forms (it
-must fail for `import ragbridge` and `from ragbridge.config import ...`, and not for
-`from ragbridge_chat import ...`).
+depends on it, a broken Alembic environment, and an import of the core in two forms
+(`import ragbridge` and `from ragbridge.config import ...`), while an import from the
+gateway's own package (`from ragbridge_chat import ...`) must not trip the guard.
 
 **Still not done - stated, not hidden**
 
