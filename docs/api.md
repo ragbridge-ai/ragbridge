@@ -371,16 +371,42 @@ matter.
   also while new text for it is still `pending`, and cached answers built under the old
   groups are dropped. The answer cache is keyed by the groups too, so one group never gets
   an answer written for another.
-- **Groups limit a request; they do not authenticate it.** The caller names its own groups,
-  so a key that can send any `access_groups` can also leave them out and see everything. Put
-  the check in the server that calls ragbridge, and give browsers and end users a way in
-  that adds the groups itself, never one that takes them from the user.
+- **Groups limit a request; an ordinary key does not have to send them.** The caller names
+  its own groups, so an ordinary key can also leave them out and see everything. For a server
+  that lets end users search, use a key that **requires** them (below), and have that server
+  add the groups itself, never take them from the user.
 - **MCP tools take no groups.** An argument chosen by a model protects nothing, so MCP
-  keeps seeing everything the key's tenant has.
+  keeps seeing everything an ordinary key's tenant has, and a key that requires groups
+  cannot be used through MCP.
 
 If the group is small next to the rest of the tenant, a search can return fewer chunks than
 `RETRIEVAL_CANDIDATES`: the vector index stops looking after `hnsw.max_scan_tuples` rows
 (20 000 by default in pgvector).
+
+### A key that requires groups
+
+A key can be made so that it **cannot** search without naming its groups. Use one for the
+server that stands between your end users and ragbridge: if a bug there forgets the groups,
+the request fails instead of searching everything.
+
+```bash
+uv run ragbridge-admin create-key --tenant-id <id> --name chat-server --requires-access-scope
+```
+
+| A request made with this key | Answer |
+|---|---|
+| `/search`, `/query` or `/agent` with a non-empty `access_groups` | filtered as above |
+| the same without `access_groups`, or with `[]` | `403`: `this API key requires access_groups` |
+| any `/documents` endpoint, reads included | `403`: `this API key cannot manage documents` |
+| an MCP tool | an error saying the key requires `access_groups`, which MCP tools do not send |
+
+Listing documents would show the titles of every group's documents, so such a key never
+reaches them: label and change documents with an ordinary key from your own backend. An
+unknown or revoked key is still a `401`, and every endpoint added later is closed to a key
+like this unless it takes `access_groups` itself.
+
+The flag is set when the key is created and cannot be changed: revoke the key and create
+another. `create-tenant` always makes an ordinary key.
 
 ## Multi-tenancy and API keys
 
@@ -393,6 +419,7 @@ invisible to every other tenant. Manage tenants and keys with `ragbridge-admin`:
 uv run ragbridge-admin create-tenant --name acme        # new tenant + first key
 uv run ragbridge-admin list-tenants                     # list all tenants
 uv run ragbridge-admin create-key --tenant-id <id> --name second-key
+uv run ragbridge-admin create-key --tenant-id <id> --name chat-server --requires-access-scope
 uv run ragbridge-admin revoke-key --prefix rb_abcdefgh  # prefix from list output
 ```
 
