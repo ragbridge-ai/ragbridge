@@ -22,9 +22,14 @@ from ragbridge.db.models import ApiKey, Tenant
 from ragbridge.db.session import create_engine, create_session_factory
 
 
-def _print_new_key(key: str) -> None:
+def _print_new_key(key: str, *, requires_access_scope: bool = False) -> None:
     print(f"API key: {key}")
     print("This key is shown once. Only its hash is stored - save it now.")
+    if requires_access_scope:
+        print(
+            "This key requires access_groups on every search, query and agent request, "
+            "and cannot manage documents."
+        )
 
 
 async def create_tenant(session_factory: async_sessionmaker[AsyncSession], name: str) -> None:
@@ -59,9 +64,20 @@ async def list_tenants(session_factory: async_sessionmaker[AsyncSession]) -> Non
 
 
 async def create_key(
-    session_factory: async_sessionmaker[AsyncSession], tenant_id: uuid.UUID, name: str
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    name: str,
+    *,
+    requires_access_scope: bool = False,
 ) -> None:
-    """Create an additional API key for an existing tenant, and print it once."""
+    """Create an additional API key for an existing tenant, and print it once.
+
+    With ``requires_access_scope`` every request made with the key must name its access
+    groups, and the key cannot manage documents: the key for a server that lets end users
+    search, so that a bug in it fails loudly instead of searching everything. It cannot be
+    changed later; revoke the key and create another (decision 3,
+    docs/plans/chat-roadmap.md).
+    """
     key = generate_api_key()
     async with session_factory() as session:
         tenant = await session.get(Tenant, tenant_id)
@@ -74,10 +90,11 @@ async def create_key(
                 key_hash=hash_api_key(key),
                 prefix=api_key_prefix(key),
                 name=name,
+                requires_access_scope=requires_access_scope,
             )
         )
         await session.commit()
-    _print_new_key(key)
+    _print_new_key(key, requires_access_scope=requires_access_scope)
 
 
 async def revoke_key(session_factory: async_sessionmaker[AsyncSession], prefix: str) -> None:
@@ -108,6 +125,12 @@ def main() -> None:
     )
     create_key_parser.add_argument("--tenant-id", required=True, type=uuid.UUID)
     create_key_parser.add_argument("--name", default="default")
+    create_key_parser.add_argument(
+        "--requires-access-scope",
+        action="store_true",
+        help="The key must name access_groups on every search, query and agent request, and "
+        "cannot manage documents. For a server that lets end users search.",
+    )
 
     revoke_key_parser = subparsers.add_parser(
         "revoke-key", help="Revoke an API key by its prefix (see list-tenants)."
@@ -122,7 +145,14 @@ def main() -> None:
     elif args.command == "list-tenants":
         asyncio.run(list_tenants(session_factory))
     elif args.command == "create-key":
-        asyncio.run(create_key(session_factory, args.tenant_id, args.name))
+        asyncio.run(
+            create_key(
+                session_factory,
+                args.tenant_id,
+                args.name,
+                requires_access_scope=args.requires_access_scope,
+            )
+        )
     elif args.command == "revoke-key":
         asyncio.run(revoke_key(session_factory, args.prefix))
 
