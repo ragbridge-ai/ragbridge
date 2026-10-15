@@ -7,7 +7,7 @@ from fpdf import FPDF
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from ragbridge.auth import hash_api_key
+from ragbridge.auth import api_key_prefix, generate_api_key, hash_api_key
 from ragbridge.config import get_settings
 from ragbridge.db.models import ApiKey, Chunk, Document, Tenant
 from ragbridge.embeddings import FakeEmbedder
@@ -95,3 +95,25 @@ async def add_document(
     )
     await session.flush()
     return document
+
+
+async def create_api_key(
+    session_factory: async_sessionmaker[AsyncSession],
+    tenant_id: uuid.UUID,
+    *,
+    requires_access_scope: bool = False,
+) -> str:
+    """Another key for an existing tenant, returning the raw key."""
+    key = generate_api_key()
+    async with session_factory() as session:
+        session.add(
+            ApiKey(
+                tenant_id=tenant_id,
+                key_hash=hash_api_key(key),
+                prefix=api_key_prefix(key),
+                name="scoped" if requires_access_scope else "plain",
+                requires_access_scope=requires_access_scope,
+            )
+        )
+        await session.commit()
+    return key

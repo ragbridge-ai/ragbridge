@@ -9,9 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ragbridge.access import AccessGroups, normalise_scope
 from ragbridge.api.explain import RetrievalInfo, build_retrieval_info
-from ragbridge.auth import get_tenant
+from ragbridge.auth import Caller, check_access_scope, get_caller
 from ragbridge.config import Settings, get_settings
-from ragbridge.db.models import Tenant
 from ragbridge.db.session import get_session
 from ragbridge.embeddings import Embedder, get_embedder
 from ragbridge.rerank import Reranker, get_reranker
@@ -73,7 +72,7 @@ class ExplainableSearchResponse(BaseModel):
 async def search_documents(
     request: SearchRequest,
     session: Annotated[AsyncSession, Depends(get_session)],
-    tenant: Annotated[Tenant, Depends(get_tenant)],
+    caller: Annotated[Caller, Depends(get_caller)],
     embedder: Annotated[Embedder, Depends(get_embedder)],
     reranker: Annotated[Reranker, Depends(get_reranker)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -92,6 +91,8 @@ async def search_documents(
     ``keyword_rank`` of ``null`` means "that arm did not find this chunk",
     which is information.)
     """
+    check_access_scope(caller, request.access_groups)
+    tenant = caller.tenant
     [embedding] = await embedder.embed([request.query])
     candidates, provenance = await hybrid_search_with_provenance(
         session,
