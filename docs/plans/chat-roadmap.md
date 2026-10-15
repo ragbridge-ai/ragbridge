@@ -867,3 +867,126 @@ gateway's own package (`from ragbridge_chat import ...`) must not trip the guard
 - The image was built and run on one machine and one architecture (arm64).
 - The demo's database passwords are the ones in the compose file. They are for a stack on a
   developer's machine and nothing else.
+
+## Step A2 detail — tenants, signing keys, origins and the admin CLI
+
+Repository: `ragbridge-chat`, branch `feat/a2-tenants` (from its `main`, off the merged A1).
+A2 gives the gateway its first tables and a command-line tool to fill them: who the tenants
+are, which core each one uses and with which key, which public keys may sign its users'
+tokens, and which sites may embed its widget. Nothing reads them over HTTP yet: tokens are
+verified in A3, and the core is first asked a question in A4.
+
+**Decided after reading the code:**
+
+1. **No private key ever enters the gateway's database** (decision 5). `add-signing-key`
+   takes a public key from the host application, or, for local testing, `--generate` makes a
+   pair, stores the public half and writes the private half to a file the operator names
+   (created with mode `0600`, never overwritten). `mint-dev-token` signs with such a file.
+   So the gateway can stand in for a host application in development without holding a key
+   that could mint tokens in production.
+2. **A2 creates the tables the data model puts these things in:** `tenants` (with
+   `public_mode`), `tenant_signing_keys` and `tenant_origins`. Decision 13 lists origins and
+   public mode as part of the bot policy; they are tenant settings either way, and
+   `tenant_policies` (the texts and limits) waits for B1.
+3. **The core key is encrypted with AES-GCM and bound to its tenant** (decision 16).
+   `GATEWAY_ENCRYPTION_KEY` is 32 random bytes, base64-encoded. The stored value is `v1:`
+   followed by base64 of a fresh 12-byte nonce, the ciphertext and the tag. The tenant's id
+   is the associated data, so a value copied into another tenant's row fails to decrypt
+   instead of sending one tenant's key on another's behalf. A command that stores or reads a
+   core key refuses to run without a valid encryption key. The `v1:` prefix leaves room for a
+   later format; rotating the encryption key is not part of this step.
+4. **A core key is checked before it is stored.** Decision 3 rests on the gateway's key being
+   one that requires an access scope, and a plain key would let a gateway bug search
+   everything. `create-tenant` and `set-core-key` call the core's `/search` with that key and
+   no groups, and store it only on `403` with `"this API key requires access_groups"`. A
+   `200` (a plain key), a `401` (an unknown or revoked one), any other answer or no answer
+   at all is refused, with the reason. The check is the gateway's first HTTP call to the
+   core, so `httpx`, which the core uses for the same purpose, becomes a runtime dependency.
+5. **A core key is never a command-line argument**, which would land in shell history and in
+   the process list. It is read from standard input, or from `RAGBRIDGE_CORE_API_KEY`.
+6. **Public keys are accepted in the form the host application has them:** base64 of the raw
+   32 bytes (what PHP's `ext-sodium` produces) or PEM, and stored as base64 raw. A `kid`
+   follows the access-group naming rule and is unique per tenant. Rotation is adding a new
+   `kid` and then revoking the old one; a revoked key stays in the table.
+7. **An origin is exact:** `scheme://host[:port]`, `http` or `https`, lower-cased, without a
+   default port, a path, a query or a wildcard. A3 compares a request's `Origin` header to it
+   character for character, and W1 builds `frame-ancestors` from it.
+8. **The CLI** (`ragbridge-chat-admin`, `argparse` as in the core's): `create-tenant`,
+   `list-tenants`, `set-core-key`, `set-public-mode`, `add-origin`, `remove-origin`,
+   `add-signing-key`, `revoke-signing-key` and `mint-dev-token`. No HTTP endpoint changes any
+   of this (decision 13).
+
+### Data model changes
+
+- `tenants`: `id` (UUID), `name`, `core_base_url`, `core_api_key_encrypted`, `public_mode`
+  (default `false`), `created_at`.
+- `tenant_signing_keys`: `id`, `tenant_id` (`ON DELETE CASCADE`), `kid`, `public_key`
+  (base64 raw), `created_at`, `revoked_at`; unique `(tenant_id, kid)`.
+- `tenant_origins`: `tenant_id` (`ON DELETE CASCADE`), `origin`; primary key
+  `(tenant_id, origin)`.
+
+One migration, the gateway's first.
+
+### New settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `GATEWAY_ENCRYPTION_KEY` | empty | 32 random bytes, base64. Required by every command that stores or reads a core key. |
+
+### New dependencies
+
+`PyJWT` and `cryptography` (decision 5): Ed25519 keys, token signing, and AES-GCM.
+`httpx` moves from development to runtime (point 4).
+
+### Proposed commit breakdown (in `ragbridge-chat`)
+
+1. **`feat(db): add tenants, signing keys and origins`**
+   - The three models and the migration; the test suite starts emptying them before each
+     test.
+   - Tests: each round-trips; deleting a tenant removes its keys and origins; a `kid` is
+     unique within a tenant and may repeat across tenants; an origin is unique within a
+     tenant.
+2. **`feat(crypto): encrypt the core API key at rest`**
+   - `GATEWAY_ENCRYPTION_KEY` and the encrypt and decrypt functions (point 3).
+   - Tests: a round trip; two encryptions of one key differ; the wrong encryption key, a
+     changed byte and another tenant's id each fail to decrypt; a missing or malformed
+     encryption key is refused; the stored value starts with `v1:` and does not contain the
+     plain key.
+3. **`feat(keys): parse signing keys and origins`**
+   - Loading a public key from base64 raw or PEM, generating a pair, and normalising an
+     origin.
+   - Tests: both public key forms load to the same stored value; a key of the wrong type or
+     length is refused; origins are normalised (`HTTPS://Shop.Example:443` becomes
+     `https://shop.example`) and a path, a query, a wildcard, `*` or another scheme is
+     refused.
+4. **`feat(core): check that a core key requires an access scope`**
+   - The check of point 4, with the transport injectable.
+   - Tests, with a fake transport and no network: the `403` with the expected message is
+     accepted; `200`, `401`, another `403`, a `500` and a connection error are each refused
+     with a reason that says what to do.
+5. **`feat(cli): add ragbridge-chat-admin`**
+   - Every command but `mint-dev-token`, as functions taking a session factory, like the
+     core's.
+   - Tests: `create-tenant` stores an encrypted key that decrypts to the one read from
+     standard input, and stores nothing when the check refuses it; `set-core-key` replaces
+     it; origins are added normalised, refused when invalid, removed; `add-signing-key
+     --generate` stores the public key and writes a private key file with mode `0600`, and
+     refuses to overwrite an existing file; `revoke-signing-key` sets `revoked_at`;
+     `list-tenants` never prints a core key.
+6. **`feat(cli): add mint-dev-token`**
+   - A token with the claims of decision 6, `kid` in the header, and a lifetime of at most 15
+     minutes; it refuses a `kid` that is unknown, revoked, or whose stored public key does
+     not match the private key file.
+   - Tests: the token verifies with the stored public key, and carries `iss`, `aud`, `sub`,
+     `groups`, `iat`, `exp` and `jti`; a lifetime over 15 minutes is refused; so are a
+     revoked `kid` and a mismatched private key. Verifying tokens in the gateway itself is A3.
+7. **`docs: document the admin CLI`**
+   - README: setting up a tenant for the demo, from encryption key to a dev token, and
+     `.env.example`.
+
+**What you see:** nothing in the browser. In the demo stack, `docker compose exec gateway
+ragbridge-chat-admin ...` creates a tenant with a scoped key of the demo's core and prints a
+dev token.
+
+Not in this step: verifying tokens and public sessions (A3), the bot policy (B1), rotating
+the encryption key, and any HTTP endpoint beyond the health checks.
