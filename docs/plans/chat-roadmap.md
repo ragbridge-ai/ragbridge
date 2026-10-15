@@ -543,3 +543,85 @@ the new index helps the vector arm and not the keyword arm.
   and the worker with the fake queue. No real Redis and `arq` worker run was repeated for
   this step.
 - Group names are case-sensitive: `HR` and `hr` are two groups.
+
+## Step 7.2 detail — API keys that require an access scope
+
+Branch: `feat/phase-7-2-scoped-keys` (created from `main`, off the merged step 7.1).
+Step 7.1 lets a request limit itself to some groups. This step lets a key be marked so that
+it *must*: a request with such a key and no groups fails instead of seeing the whole
+tenant. It turns the groups from a filter into an access check for the keys that carry the
+flag. A plain key behaves exactly as before.
+
+**Decided after reading the code:**
+
+1. **Closed by default.** No endpoint can see its key today: `get_tenant` returns only the
+   `Tenant` (`auth.py`). Rather than add a check to each of the eight `/documents`
+   endpoints, `get_tenant` itself answers `403` for a key with `requires_access_scope`. Every
+   endpoint that depends on it is then closed to such a key, including any added later. The
+   three endpoints that accept a scoped key - `/search`, `/query` and `/agent` - depend
+   instead on a new `get_caller`, which returns the tenant together with the key's flag, and
+   check the request's `access_groups` against it. A forgotten check therefore fails closed,
+   the same reasoning as Phase 3's router-level dependency.
+2. **`401` before `403`.** A missing, unknown or revoked key is still `401` with the same
+   message as before; only a valid scoped key reaches the `403`. The detail says what to
+   change: `"this API key requires access_groups"` on the retrieval endpoints (for a missing
+   field or `[]`), and `"this API key cannot manage documents"` on `/documents`.
+3. **MCP gets a readable error.** A scoped key can never succeed through MCP, because the
+   tools take no groups (step 7.1). `RagbridgeClient` turns every error but `401` into
+   "ragbridge returned HTTP 403"; it gains a message for `403` that says the key requires
+   `access_groups`, which MCP tools do not send. No tool's schema changes.
+4. **The CLI only creates such keys.** `ragbridge-admin create-key --requires-access-scope`,
+   which says so when it prints the key. `create-tenant` keeps creating a plain key, and an
+   existing key cannot be changed: revoke it and create another. Listing keys is not part of
+   this step.
+
+### Data model changes
+
+- `api_keys.requires_access_scope`: `bool`, not null, server default `false`. One migration
+  after `b84f1c6a2d97`; every existing key stays a plain key.
+
+### API changes
+
+| Endpoint | With a key that requires an access scope |
+|---|---|
+| `POST /search`, `POST /query`, `POST /agent` | `403` without `access_groups` or with `[]`; otherwise as in step 7.1 |
+| Every `/documents` endpoint, reads included | `403` |
+| `/mcp` tools, `ragbridge-mcp` | A tool error saying the key requires `access_groups` |
+
+Nothing changes for a plain key. No new settings.
+
+### Proposed commit breakdown
+
+1. **`docs: add Phase 7 step 2 plan`** (this section).
+2. **`feat(db): add requires_access_scope to api_keys`**
+   - The column on `ApiKey` and the migration. Nothing reads it yet.
+   - Tests: a migrated database gives an existing key `false`; a key round-trips the flag.
+3. **`feat(auth): require an access scope from keys marked for it`**
+   - `auth.py`: a frozen `Caller` (`tenant`, `requires_access_scope`), `get_caller` (today's
+     lookup, unchanged), `get_tenant` built on it and answering `403` for a scoped key, and
+     `check_access_scope(caller, access_groups)` for the three retrieval endpoints, which
+     move to `get_caller`.
+   - Tests (`tests/test_scoped_keys.py`): each retrieval endpoint answers `403` to a scoped
+     key without the field and with `[]`, and filters as in step 7.1 with a list; each of the
+     eight `/documents` endpoints answers `403` to a scoped key with an otherwise valid
+     request, so the `403` is not a `422` in disguise; a plain key is unchanged on all of
+     them; an unknown key is still `401`. And a guard test that walks every operation in
+     the app's OpenAPI schema except the health checks, calls it with a scoped key and no
+     groups, and requires a `403` - an endpoint added later without the check fails it.
+4. **`feat(mcp): explain a rejected scoped key in the tool error`**
+   - The `403` message in `RagbridgeClient`.
+   - Tests: a scoped key through `/mcp` gets that message from each of the three tools.
+5. **`feat(cli): add create-key --requires-access-scope`**
+   - The option, and a line in the output saying the key requires `access_groups`.
+   - Tests: the option stores the flag and the printed key then gets `403` on `/documents`
+     and `200` on a scoped `/search`; without it the key is plain.
+6. **`docs: document keys that require an access scope`**
+   - The API guide's access-group section: how to create such a key, what it can and cannot
+     call, and the replacement of "nothing yet forces a key to send groups". The CLI list in
+     *Multi-tenancy and API keys*. README, one line.
+
+Each protection is broken once by hand to see that a test notices, as in step 7.1, and the
+Outcome says which.
+
+Not in this step: a command that lists keys, changing the flag of an existing key, and any
+gateway code (Phase A).
