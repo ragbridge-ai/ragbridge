@@ -224,8 +224,11 @@ The core's phases are numbered; the letter phases below belong to the other repo
    unknown or revoked `kid`, lifetime over 15 minutes, `alg: none`, a token signed by
    another tenant's key.
 4. Conversations and `POST /conversations/{id}/messages`, without streaming. The gateway calls
-   the core `/query` with `history` and the token's groups. Tests: another `sub` cannot read a
-   conversation; groups always come from the token, never from the request body.
+   the core `/query` with the token's groups. It sends no `history` yet: the core gains that
+   field in 7.3, which comes after the widget, so until then each message is retrieved as a
+   question of its own. Every message is stored from the start, so 7.3 only has to send what
+   is already there. Tests: another `sub` cannot read a conversation; groups always come from
+   the token, never from the request body.
 
 ### Phase B — reliability and safety
 
@@ -689,3 +692,118 @@ so authentication costs no extra round trip. It was not benchmarked.
   also added to `RETRIEVAL`.
 - Nothing here was run against a real server with the stdio MCP proxy (`ragbridge-mcp`)
   holding a scoped key; it uses the same client class as `/mcp`, which is tested.
+
+## Step A1 detail — gateway skeleton, CI, ADRs and the demo stack
+
+Repository: `ragbridge-ai/ragbridge-chat`, branch `feat/a1-skeleton` (from its `main`, which
+holds only the licence). This section and the step's outcome live here, in the core's plan,
+which the gateway repository links to rather than copies.
+
+A1 builds the empty frame every later step fills in: a gateway that starts, reports its
+health and reaches its own database, a CI that keeps it to the core's standards, the three
+decisions that shape the repository written down as ADRs, and one command that starts the
+whole demo. It has no tenants, no tokens and no chat yet.
+
+**Decided after reading the code:**
+
+1. **The demo stack builds the core from its release tag.** There is no published core
+   image; the core's own compose file builds its local `Dockerfile`. The demo builds it
+   straight from the repository at a tag (`build: https://github.com/ragbridge-ai/ragbridge.git#v1.4.0`),
+   so it runs a released core that has access groups and scoped keys, needs no checkout of
+   the core next to this one, and changes only when the tag in the file does. CI never builds
+   it: the gateway's tests use no network and no core.
+2. **The demo site is a small FastAPI app**, one file in `demo/site/`, run from the gateway's
+   image. A static site would do for A1, but the intranet's fake login has to sign tokens on
+   the server with an Ed25519 private key from A3 on, so it would be replaced two steps later.
+   It never imports the gateway's code: it stands in for the host application, which talks to
+   the gateway over HTTP like any other.
+3. **Two PostgreSQL servers in the demo:** `pgvector` for the core, plain `postgres:17` for
+   the gateway (decision 15: its own database, no pgvector). Neither publishes a port, so the
+   demo can run next to the core's own compose stack without a clash.
+4. **The core needs Ollama on the host**, exactly as in the core's own compose file
+   (`nomic-embed-text` and `llama3.2`). A1 only needs the core to start; the demo README says
+   what is needed before a question can be answered.
+
+### Repository layout
+
+```
+ragbridge-chat/
+├── .github/workflows/ci.yml
+├── docs/adr/                 # 0001-0003
+├── demo/site/app.py          # the stand-in host application
+├── migrations/               # Alembic environment, no revisions yet
+├── src/ragbridge_chat/
+│   ├── __init__.py
+│   ├── main.py               # create_app()
+│   ├── config.py             # pydantic-settings
+│   ├── api/health.py         # /health, /health/ready
+│   └── db/                   # base, session
+├── tests/
+├── AGENTS.md  README.md  LICENSE  Dockerfile  docker-compose.yml
+├── alembic.ini  pyproject.toml  uv.lock  .env.example  .gitignore
+```
+
+Package `ragbridge_chat`, distribution `ragbridge-chat`, Python 3.12, `uv`. Dependencies are
+the ones decision 15 names: FastAPI, Uvicorn, pydantic-settings, async SQLAlchemy with
+psycopg, Alembic; ruff, mypy, pytest and httpx for development. `PyJWT` and `cryptography`
+arrive with the step that first needs them.
+
+### Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+psycopg://ragbridge_chat:ragbridge_chat@localhost:5433/ragbridge_chat` | The gateway's own database |
+
+### The demo stack
+
+`docker compose up --build` in `ragbridge-chat` starts:
+
+| Service | Image | Port on the host |
+|---|---|---|
+| `core-postgres` | `pgvector/pgvector:pg17` | none |
+| `core-redis` | `redis:7-alpine` | none |
+| `core` | built from the core at `v1.4.0` | 8001 |
+| `gateway-postgres` | `postgres:17` | none |
+| `gateway` | built from this repository; runs `alembic upgrade head`, then Uvicorn | 8080 |
+| `demo-site` | the same image, running `demo/site/app.py` | 8090 |
+
+The demo site serves three placeholder pages - the public shop, the intranet as the `hr`
+user, the intranet as the `engineering` user - which later steps fill in.
+
+### Proposed commit breakdown (in `ragbridge-chat`)
+
+1. **`chore: scaffold the project`**
+   - `pyproject.toml`, `uv.lock`, ruff and mypy settings as in the core, `.gitignore`,
+     `.env.example`, `create_app()` and `GET /health`.
+   - Tests: `/health` answers `{"status": "ok"}`; `create_app()` builds a fresh app each
+     time; a guard that no module under `src/` imports the core (`ragbridge`, as opposed to
+     `ragbridge_chat`): the gateway reaches the core over HTTP only.
+2. **`feat(db): add the database session, readiness check and Alembic`**
+   - `DATABASE_URL`, the async engine and session, `GET /health/ready` (`200` when the
+     database answers, `503` when it does not), and an Alembic environment with no
+     revisions.
+   - Tests: ready against the real test database; `503` against an unreachable one;
+     `alembic upgrade head` runs on an empty database. The test database is created by a
+     session fixture, as in the core.
+3. **`ci: run lint, types and tests`**
+   - One job: `ruff check`, `ruff format --check`, `mypy`, `pytest`, against a `postgres:17`
+     service. No network, no core.
+4. **`feat(demo): add the demo stack and an empty demo site`**
+   - `Dockerfile` (the core's: multi-stage, a pinned `uv`, an unprivileged user),
+     `docker-compose.yml` as above, `demo/site/app.py` with the three placeholder pages.
+   - Tests: each page answers `200` with its own title; the demo site imports nothing from
+     `ragbridge_chat`.
+5. **`docs: add AGENTS.md, the README and ADRs 0001-0003`**
+   - `AGENTS.md` in the core's style, linking to this plan.
+   - README: what the project is, how to run the tests, how to start the demo.
+   - ADR 0001: the host application is the identity provider, with Ed25519 tokens
+     (decision 5). ADR 0002: the gateway is a separate Python service that reaches the core
+     only over HTTP (decision 15). ADR 0003: the widget runs in an iframe served by the
+     gateway (decision 17).
+
+**What you see in the browser** after this step: `http://localhost:8090` shows the three
+placeholder pages, `http://localhost:8080/health/ready` answers `{"status": "ok"}`, and
+`http://localhost:8001/health` answers from the core.
+
+Not in this step: tenants, keys and the admin CLI (A2), tokens (A3), conversations (A4),
+and any widget code (Phase W).
