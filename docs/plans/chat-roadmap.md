@@ -224,8 +224,11 @@ The core's phases are numbered; the letter phases below belong to the other repo
    unknown or revoked `kid`, lifetime over 15 minutes, `alg: none`, a token signed by
    another tenant's key.
 4. Conversations and `POST /conversations/{id}/messages`, without streaming. The gateway calls
-   the core `/query` with `history` and the token's groups. Tests: another `sub` cannot read a
-   conversation; groups always come from the token, never from the request body.
+   the core `/query` with the token's groups. It sends no `history` yet: the core gains that
+   field in 7.3, which comes after the widget, so until then each message is retrieved as a
+   question of its own. Every message is stored from the start, so 7.3 only has to send what
+   is already there. Tests: another `sub` cannot read a conversation; groups always come from
+   the token, never from the request body.
 
 ### Phase B — reliability and safety
 
